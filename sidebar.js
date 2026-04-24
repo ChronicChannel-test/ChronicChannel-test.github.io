@@ -174,14 +174,14 @@
       top: 16px; right: 16px;
       z-index: 1100;
       display: block;
-      border-radius: 8px;
+      border-radius: 16px;
+      overflow: hidden;
       transition: transform 0.2s ease, box-shadow 0.2s ease;
     }
     #cic-home-logo:hover { transform: translateY(-1px); box-shadow: 0 8px 14px rgba(20,34,37,0.12); }
     #cic-home-logo img {
       width: 104px; height: 104px;
       object-fit: contain; display: block;
-      border-radius: 6px;
     }
 
     /* ── Nav ── */
@@ -257,11 +257,20 @@
   `;
 
   // ─── HTML builders ────────────────────────────────────────────────────────────
+  function resolveHref(href) {
+    if (href === '#' || typeof href !== 'string') return href;
+    if (!href.startsWith('/uk-aq/')) return href;
+    const path = location.pathname || '/';
+    const hasUkAqPrefix = path === '/uk-aq' || path.startsWith('/uk-aq/');
+    return hasUkAqPrefix ? href : href.replace(/^\/uk-aq/, '');
+  }
+
   function buildNavItem(item) {
     const path = location.pathname;
-    const isActive = item.href !== '#' && path.includes(item.href);
+    const href = resolveHref(item.href);
+    const isActive = href !== '#' && path.includes(href);
     return `
-      <a class="cic-nav-item${isActive ? ' active' : ''}" href="${item.href}">
+      <a class="cic-nav-item${isActive ? ' active' : ''}" href="${href}">
         <i class="cic-nav-icon">${item.icon}</i>
         <span class="cic-nav-label">${item.label}</span>
       </a>`;
