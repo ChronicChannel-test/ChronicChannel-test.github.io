@@ -5,20 +5,20 @@
       id: 'uk-aq',
       label: 'UK-AQ',
       children: [
-        { label: 'Hex Map',     icon: '◆', href: '/uk-aq/hex-map' },
-        { label: 'Sensors',     icon: '●', href: '/uk-aq/sensors' },
-        { label: 'Sensors Map', icon: '◉', href: '/uk-aq/sensors-map' },
+        { label: 'Hex Map',     icon: '◆', href: '/uk-aq/hex_map.html' },
+        { label: 'Sensors',     icon: '●', href: '/uk-aq/sensors_chart.html' },
+        { label: 'Sensors Map', icon: '◉', href: '/uk-aq/sensors_map.html' },
       ],
     },
     {
       id: 'data-explorer',
       label: 'Data Explorer',
       children: [
-        { label: 'Bubble Chart',       icon: '○', href: '/data-explorer/bubble' },
-        { label: 'Line Chart',         icon: '↗', href: '/data-explorer/line' },
-        { label: 'Ecodesign Replaces', icon: '≡', href: '/data-explorer/eco' },
-        { label: 'Category Info',      icon: 'i', href: '/data-explorer/category-info' },
-        { label: 'User Guide',         icon: '?', href: '/data-explorer/user-guide' },
+        { label: 'Bubble Chart',       icon: '○', href: '/data-explorer/bubblechart/' },
+        { label: 'Line Chart',         icon: '↗', href: '/data-explorer/linechart/' },
+        { label: 'Ecodesign Replaces', icon: '≡', href: '#' },
+        { label: 'Category Info',      icon: 'i', href: '/data-explorer/resources/' },
+        { label: 'User Guide',         icon: '?', href: '/data-explorer/user-guide/' },
       ],
     },
     {
@@ -150,24 +150,23 @@
     /* ── Hamburger button ── */
     #cic-hamburger {
       position: fixed;
-      top: 10px; left: 10px;
+      top: 16px; left: 16px;
       z-index: 300;
       background: none;
       border: none;
       cursor: pointer;
-      padding: 4px;
-      width: 52px; height: 52px;
+      padding: 0;
       display: flex; align-items: center; justify-content: center;
-      border-radius: 8px;
-      transition: background 0.2s, opacity 0.2s;
+      border-radius: 25%;
+      overflow: hidden;
+      transition: transform 0.2s ease, box-shadow 0.2s ease;
     }
-    #cic-hamburger:hover { background: rgba(16,24,34,0.07); }
-    #cic-hamburger img  { width: 40px; height: 40px; object-fit: contain; display: block; }
-
-    body[data-sidebar-state="expanded"]  #cic-hamburger { opacity: 0.45; }
-    body[data-sidebar-state="collapsed"] #cic-hamburger { opacity: 1; }
-    body[data-sidebar-state="mini"]      #cic-hamburger { display: none; }
-    body[data-sidebar-state="drawer"]    #cic-hamburger { opacity: 1; }
+    #cic-hamburger:hover {
+      transform: translateY(-1px);
+      box-shadow: 0 8px 14px rgba(20,34,37,0.12);
+    }
+    #cic-hamburger img { width: 44px; height: 44px; object-fit: contain; display: block; }
+    body[data-sidebar-state="mini"] #cic-hamburger { display: none; }
 
     /* ── Top-right CIC home logo ── */
     #cic-home-logo {
@@ -196,12 +195,15 @@
 
     .cic-section-label {
       font-family: var(--cic-font);
-      font-size: 12px;
-      letter-spacing: 0.08em;
+      font-size: 20px;
+      letter-spacing: 0.06em;
       text-transform: uppercase;
-      color: var(--cic-ink-4);
+      font-weight: 700;
       padding: 14px 10px 5px;
-      font-weight: 600;
+      background: linear-gradient(285deg, #FF0000, #FEAE00);
+      -webkit-background-clip: text;
+      -webkit-text-fill-color: transparent;
+      background-clip: text;
     }
     body[data-sidebar-state="mini"] .cic-section-label { display: none; }
 
@@ -315,14 +317,14 @@
     const btn = document.createElement('button');
     btn.id = 'cic-hamburger';
     btn.setAttribute('aria-label', 'Toggle navigation');
-    btn.innerHTML = `<img src="${location.origin}/images/CIC-hamburger-button.svg" alt="Menu">`;
+    btn.innerHTML = `<img src="${location.origin}/sidebar-images/CIC-hamburger-button.svg" alt="Menu">`;
 
     // Top-right home logo
     const homeLogo = document.createElement('a');
     homeLogo.id = 'cic-home-logo';
     homeLogo.href = '/';
     homeLogo.setAttribute('aria-label', 'Chronic Illness Channel home');
-    homeLogo.innerHTML = `<img src="${location.origin}/images/CIC - Square - Border - Small.png" alt="CIC">`;
+    homeLogo.innerHTML = `<img src="${location.origin}/sidebar-images/CIC-Square-Border-Words-Alpha.svg" alt="CIC">`;
 
     // Mount into placeholder or body
     const mountEl = document.getElementById('cic-sidebar-mount');
