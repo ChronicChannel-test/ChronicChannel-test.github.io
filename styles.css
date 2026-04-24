@@ -4,6 +4,7 @@ body {
   padding: 0;
   background: #f7f8fa;
   color: #222;
+  /* sidebar.js sets padding-left via data-sidebar-state */
 }
 header {
   background: #000;
