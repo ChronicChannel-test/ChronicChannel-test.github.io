@@ -18,12 +18,19 @@ PORT = 8080
 API_PROXY_PREFIX  = '/api/aq'
 API_PROXY_TARGET  = 'https://cic-test.chronicillnesschannel.co.uk'
 
-# Cloudflare Access Service Token — loaded from .env in the same directory
-def _load_env():
-    env_path = os.path.join(os.path.dirname(__file__), '.env')
+# URL prefix → absolute filesystem root (longest prefix matched first)
+ROOTS = {
+    '/uk-aq':         '/Users/mikehinford/Dropbox/Projects/CIC Website/CIC Air Quality Networks/CIC UK-AQ Webpage/CIC-test-uk-aq',
+    '/data-explorer': '/Users/mikehinford/Dropbox/Projects/CIC Website/CIC Data Explorer/CIC Data Explorer Mark 2/CIC-test-data-explorer-mk2',
+    '/report':        '/Users/mikehinford/Dropbox/Projects/CIC Website/CIC Report Form/CIC-TEST-report-form',
+    '/':              '/Users/mikehinford/Dropbox/Projects/CIC Website/ChronicChannel-Test Root Repo/ChronicChannel-test.github.io',
+}
+
+
+def _load_env_file(env_path):
     env = {}
     try:
-        with open(env_path) as f:
+        with open(env_path, encoding='utf-8') as f:
             for line in f:
                 line = line.strip()
                 if line and not line.startswith('#') and '=' in line:
@@ -33,18 +40,15 @@ def _load_env():
         pass
     return env
 
-_env = _load_env()
+# Cloudflare Access Service Token — loaded from local .env with fallback to UK-AQ .env
+_env = {}
+_env.update(_load_env_file(os.path.join(ROOTS['/uk-aq'], '.env')))
+_env.update(_load_env_file(os.path.join(os.path.dirname(__file__), '.env')))
 CF_CLIENT_ID     = _env.get('CLOUDFLARE_ACCESS_CLIENT_ID', '')
 CF_CLIENT_SECRET = _env.get('CLOUDFLARE_ACCESS_CLIENT_SECRET', '')
 AQ_CACHE_BYPASS_SECRET = _env.get('UK_AQ_CACHE_BYPASS_SECRET', '')
-
-# URL prefix → absolute filesystem root (longest prefix matched first)
-ROOTS = {
-    '/uk-aq':         '/Users/mikehinford/Dropbox/Projects/CIC Website/CIC Air Quality Networks/CIC UK-AQ Webpage/CIC-test-uk-aq',
-    '/data-explorer': '/Users/mikehinford/Dropbox/Projects/CIC Website/CIC Data Explorer/CIC Data Explorer Mark 2/CIC-test-data-explorer-mk2',
-    '/report':        '/Users/mikehinford/Dropbox/Projects/CIC Website/CIC Report Form/CIC-TEST-report-form',
-    '/':              '/Users/mikehinford/Dropbox/Projects/CIC Website/ChronicChannel-Test Root Repo/ChronicChannel-test.github.io',
-}
+TURNSTILE_SITE_KEY = _env.get('UK_AQ_TURNSTILE_SITE_KEY', '')
+TURNSTILE_PLACEHOLDER = "__UK_AQ_TURNSTILE_SITE_KEY__"
 
 # Headers that must not be forwarded to the upstream or back to the client
 _HOP_BY_HOP = frozenset([
@@ -57,6 +61,39 @@ _HOP_BY_HOP = frozenset([
 class MultiRootHandler(http.server.SimpleHTTPRequestHandler):
 
     # ── API proxy ──────────────────────────────────────────────────────────────
+
+    def _maybe_serve_uk_aq_html_with_turnstile(self):
+        # Keep local URLs clean by replacing the Turnstile placeholder in served HTML.
+        if not TURNSTILE_SITE_KEY:
+            return False
+
+        decoded_path = unquote(urlparse(self.path).path)
+        if not decoded_path.startswith('/uk-aq'):
+            return False
+
+        target = self.translate_path(self.path)
+        if not target.lower().endswith('.html') or not os.path.isfile(target):
+            return False
+
+        try:
+            with open(target, 'rb') as f:
+                source = f.read()
+            html = source.decode('utf-8')
+        except (OSError, UnicodeDecodeError):
+            return False
+
+        if TURNSTILE_PLACEHOLDER not in html:
+            return False
+
+        rendered = html.replace(TURNSTILE_PLACEHOLDER, TURNSTILE_SITE_KEY).encode('utf-8')
+        self.send_response(200)
+        self.send_header('Content-Type', 'text/html; charset=utf-8')
+        self.send_header('Content-Length', str(len(rendered)))
+        self.send_header('Cache-Control', 'no-store')
+        self.end_headers()
+        if self.command != 'HEAD':
+            self.wfile.write(rendered)
+        return True
 
     def _proxy_api(self):
         """Forward /api/aq/... to the production Cloudflare Worker and relay the response."""
@@ -105,8 +142,18 @@ class MultiRootHandler(http.server.SimpleHTTPRequestHandler):
     def do_GET(self):
         if unquote(urlparse(self.path).path).startswith(API_PROXY_PREFIX):
             self._proxy_api()
-        else:
-            super().do_GET()
+            return
+        if self._maybe_serve_uk_aq_html_with_turnstile():
+            return
+        super().do_GET()
+
+    def do_HEAD(self):
+        if unquote(urlparse(self.path).path).startswith(API_PROXY_PREFIX):
+            self.send_error(405)
+            return
+        if self._maybe_serve_uk_aq_html_with_turnstile():
+            return
+        super().do_HEAD()
 
     def do_POST(self):
         if unquote(urlparse(self.path).path).startswith(API_PROXY_PREFIX):
@@ -165,6 +212,10 @@ if __name__ == '__main__':
             print(f'  CF service token  → loaded ({CF_CLIENT_ID[:12]}...)')
         else:
             print(f'  CF service token  → NOT FOUND (check .env)')
+        if TURNSTILE_SITE_KEY:
+            print(f'  Turnstile key      → loaded ({TURNSTILE_SITE_KEY[:10]}...)')
+        else:
+            print(f'  Turnstile key      → NOT FOUND (add UK_AQ_TURNSTILE_SITE_KEY)')
         print(f'\nCtrl+C to stop.\n')
         try:
             httpd.serve_forever()
