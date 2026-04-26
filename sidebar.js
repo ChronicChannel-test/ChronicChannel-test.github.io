@@ -32,6 +32,12 @@
       children: [],
     },
   ];
+  const HOME_ITEM = {
+    label: 'Home',
+    iconImg: 'CIC-Home-Alpha.svg',
+    href: '/',
+    className: 'cic-home-nav-item',
+  };
 
   // ─── State ────────────────────────────────────────────────────────────────────
   const EXPANDED  = 'expanded';
@@ -67,7 +73,7 @@
     clearTimeout(autoCollapseTimer);
     autoCollapseTimer = setTimeout(() => {
       if (getBreakpoint() === 'desktop' && getState() === EXPANDED) {
-        setState(COLLAPSED);
+        setState(MINI);
       }
     }, 3000);
   }
@@ -112,7 +118,7 @@
       border-right: 1px solid var(--cic-line);
       display: flex;
       flex-direction: column;
-      z-index: 200;
+      z-index: 1200;
       overflow-y: auto;
       overflow-x: hidden;
       transition: transform var(--cic-ease), width var(--cic-ease);
@@ -140,7 +146,7 @@
       position: fixed;
       inset: 0;
       background: rgba(16,24,34,0.35);
-      z-index: 199;
+      z-index: 1190;
       opacity: 0;
       transition: opacity var(--cic-ease);
     }
@@ -150,8 +156,8 @@
     /* ── Hamburger button ── */
     #cic-hamburger {
       position: fixed;
-      top: 16px; left: 16px;
-      z-index: 300;
+      top: 16px; left: 10px;
+      z-index: 1300;
       background: none;
       border: none;
       cursor: pointer;
@@ -166,13 +172,12 @@
       box-shadow: 0 8px 14px rgba(20,34,37,0.12);
     }
     #cic-hamburger img { width: 44px; height: 44px; object-fit: contain; display: block; }
-    body[data-sidebar-state="mini"] #cic-hamburger { display: none; }
 
     /* ── Top-right CIC home logo ── */
     #cic-home-logo {
-      position: fixed;
-      top: 16px; right: 16px;
-      z-index: 1100;
+      position: absolute;
+      top: 16px; right: 28px;
+      z-index: 1310;
       display: block;
       border-radius: 16px;
       overflow: hidden;
@@ -191,6 +196,22 @@
       display: flex;
       flex-direction: column;
       gap: 4px;
+    }
+
+    .cic-home-nav-item {
+      padding-left: 0;
+      margin-left: -13px;
+      margin-bottom: 0;
+    }
+    .cic-home-nav-item .cic-nav-icon-img {
+      width: 44px;
+      height: 44px;
+    }
+    .cic-home-nav-item + .cic-nav-section .cic-section-label {
+      padding-top: 6px;
+    }
+    body[data-sidebar-state="mini"] .cic-home-nav-item {
+      margin-left: 0;
     }
 
     .cic-section-label {
@@ -277,12 +298,17 @@
   function buildNavItem(item) {
     const path = location.pathname;
     const href = resolveHref(item.href);
-    const isActive = href !== '#' && path.includes(href);
+    const isActive = href !== '#' && (
+      href === '/' || href === '/index.html'
+        ? isHomePage()
+        : path.includes(href)
+    );
+    const className = item.className ? ` ${item.className}` : '';
     const iconHtml = item.iconImg
       ? `<img class="cic-nav-icon-img" src="${location.origin}/sidebar-images/${item.iconImg}" alt="">`
       : `<i class="cic-nav-icon">${item.icon}</i>`;
     return `
-      <a class="cic-nav-item${isActive ? ' active' : ''}" href="${href}">
+      <a class="cic-nav-item${className}${isActive ? ' active' : ''}" href="${href}">
         ${iconHtml}
         <span class="cic-nav-label">${item.label}</span>
       </a>`;
@@ -300,6 +326,7 @@
   function buildSidebar() {
     return `
       <nav class="cic-nav" aria-label="Site navigation">
+        ${buildNavItem(HOME_ITEM)}
         ${NAV.map(buildSection).join('')}
       </nav>
       <div id="cic-sidebar-footer">
@@ -387,7 +414,7 @@
         document.body.classList.toggle('cic-drawer-open');
       } else {
         clearTimeout(autoCollapseTimer);
-        setState(getState() === EXPANDED ? COLLAPSED : EXPANDED);
+        setState(getState() === EXPANDED ? MINI : EXPANDED);
       }
     });
 
@@ -399,7 +426,7 @@
     // Left-edge hover re-expand (desktop)
     document.addEventListener('mousemove', e => {
       if (getBreakpoint() !== 'desktop') return;
-      if (e.clientX < 20 && getState() === COLLAPSED) {
+      if (e.clientX < 20 && getState() === MINI) {
         clearTimeout(autoCollapseTimer);
         setState(EXPANDED);
       }
@@ -429,7 +456,7 @@
         document.body.classList.remove('cic-drawer-open');
       } else if (getState() === MINI || getState() === DRAWER) {
         document.body.classList.remove('cic-drawer-open');
-        setState(isHomePage() ? EXPANDED : COLLAPSED);
+        setState(isHomePage() ? EXPANDED : MINI);
       }
     });
   }

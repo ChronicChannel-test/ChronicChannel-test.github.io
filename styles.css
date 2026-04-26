@@ -2,13 +2,13 @@ body {
   font-family: Arial, sans-serif;
   margin: 0;
   padding: 0;
-  background: #f7f8fa;
+  background: #fff;
   color: #222;
   /* sidebar.js sets padding-left via data-sidebar-state */
 }
 header {
-  background: #000;
-  color: #fff;
+  background: #fff;
+  color: #222;
   padding: 0 0 1rem 0;
   text-align: center;
 }
@@ -20,7 +20,7 @@ header {
   position: relative;
   max-width: 1200px;
   margin: 0 auto;
-  padding-right: 130px;
+  padding-right: 0;
 }
 .sidebar-socials {
   position: fixed;
@@ -102,7 +102,7 @@ nav ul {
   gap: 2rem;
 }
 nav a {
-  color: #fff;
+  color: #222;
   text-decoration: none;
   font-weight: bold;
 }
@@ -112,7 +112,6 @@ nav a:hover {
 main {
   max-width: 800px;
   margin: 2rem auto;
-  margin-right: 140px;
   padding: 1rem;
   background: #fff;
   border-radius: 8px;
@@ -124,7 +123,7 @@ section {
 footer {
   text-align: center;
   padding: 1rem 0;
-  background: #eaeaea;
+  background: #fff;
   color: #666;
   position: fixed;
   width: 100%;

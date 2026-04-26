@@ -1,0 +1,109 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Contact | Chronic Illness Channel</title>
+  <link rel="stylesheet" href="styles.css">
+  <link rel="icon" href="images/favicon.png" type="image/png">
+  <style>
+    .contact-main {
+      max-width: 900px;
+    }
+    .contact-logo-link {
+      display: inline-block;
+      margin-bottom: 1rem;
+    }
+    .contact-logo {
+      width: 180px;
+      height: auto;
+      display: block;
+    }
+    .contact-links {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+      gap: 0.8rem;
+      margin-top: 1rem;
+    }
+    .contact-link {
+      display: flex;
+      align-items: center;
+      gap: 0.7rem;
+      padding: 0.7rem 0.8rem;
+      border: 1px solid #d8dde3;
+      border-radius: 8px;
+      background: #fff;
+      color: #222;
+      text-decoration: none;
+    }
+    .contact-link:hover {
+      background: #f7f8fa;
+    }
+    .contact-link img {
+      width: 30px;
+      height: 30px;
+      object-fit: contain;
+      flex-shrink: 0;
+    }
+    .support-section {
+      margin-top: 1.25rem;
+      display: flex;
+      justify-content: flex-start;
+    }
+  </style>
+</head>
+<body>
+  <div id="cic-sidebar-mount"></div>
+  <header>
+    <img src="images/CIC - Banner v2.png" alt="Chronic Illness Channel Banner" style="width: 100%; height: auto;">
+    <h1>Chronic Illness Channel</h1>
+    <nav>
+      <ul>
+        <li><a href="index.html#about">About</a></li>
+        <li><a href="index.html#resources">Resources</a></li>
+        <li><a href="index.html#community">Community</a></li>
+        <li><a href="contact.html">Contact</a></li>
+      </ul>
+    </nav>
+  </header>
+  <main class="contact-main">
+    <section>
+      <h2>Contact</h2>
+      <p>Email us at <a href="mailto:info@chronicillnesschannel.com">info@chronicillnesschannel.com</a></p>
+      <a href="https://www.youtube.com/@ChronicIllnessChannel" target="_blank" rel="noopener" class="contact-logo-link">
+        <img src="images/CIC - Square - Alpha.png" alt="CIC Logo" class="contact-logo">
+      </a>
+      <div class="contact-links">
+        <a href="https://youtube.com/@ChronicIllnessChannel" class="contact-link" target="_blank" rel="noopener">
+          <img src="images/youtube-logo-6.svg" alt="">
+          <span>YouTube</span>
+        </a>
+        <a href="https://bsky.app/profile/chronicchannel.bsky.social" class="contact-link" target="_blank" rel="noopener">
+          <img src="images/Bluesky_Logo.svg" alt="">
+          <span>Bluesky</span>
+        </a>
+        <a href="https://twitter.com/@Chronic_Channel" class="contact-link" target="_blank" rel="noopener">
+          <img src="images/Twitter dead bird with X 4 Black bkgrnd v2.svg" alt="">
+          <span>Twitter/X</span>
+        </a>
+        <a href="https://facebook.com/ChronicIllnessChannel" class="contact-link" target="_blank" rel="noopener">
+          <img src="images/facebook.svg" alt="">
+          <span>Facebook</span>
+        </a>
+      </div>
+      <div class="support-section">
+        <a href="https://ko-fi.com/F2F21NGXA3" class="kofi-button" target="_blank" rel="noopener">
+          <span class="kofi-icon-svg">
+            <img src="images/kofi_symbol.svg" alt="Ko-fi" style="width: 28px; height: 28px; display: block; object-fit: contain;">
+          </span>
+          <span class="kofi-text">Support Chronic Illness Channel</span>
+        </a>
+      </div>
+    </section>
+  </main>
+  <footer>
+    <p>&copy; 2023 Chronic Illness Channel. All rights reserved.</p>
+  </footer>
+  <script src="sidebar.js"></script>
+</body>
+</html>
