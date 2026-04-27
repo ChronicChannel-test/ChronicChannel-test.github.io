@@ -17,13 +17,15 @@
 
     .home-header {
       margin: 0;
-      padding: 0;
+      padding: 0 28px;
       background: transparent;
       text-align: left;
+      box-sizing: border-box;
     }
 
     .home-banner {
       width: 100%;
+      max-width: 100%;
       height: auto;
       display: block;
     }
@@ -197,6 +199,10 @@
     }
 
     @media (max-width: 640px) {
+      .home-header {
+        padding: 0 18px;
+      }
+
       .home-main {
         padding: 22px 16px 84px;
         gap: 42px;
