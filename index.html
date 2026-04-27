@@ -54,11 +54,13 @@
     }
 
     .section-logo--ukaq {
-      width: clamp(220px, 28vw, 320px);
+      width: auto;
+      height: clamp(44px, 5.6vw, 80px);
     }
 
     .section-logo--de {
-      width: clamp(320px, 52vw, 640px);
+      width: auto;
+      height: clamp(44px, 5.6vw, 80px);
     }
 
     .section-description {
@@ -77,9 +79,11 @@
     }
 
     .tool-card {
-      display: block;
-      min-height: 214px;
-      padding: 1.25rem 1.35rem;
+      display: flex;
+      flex-direction: column;
+      box-sizing: border-box;
+      height: 198px;
+      padding: 1.05rem 1.35rem 0.68rem;
       border: 8px solid transparent;
       border-radius: 28px;
       background:
@@ -88,6 +92,12 @@
       color: #101822;
       text-decoration: none;
       transition: transform 0.18s ease, box-shadow 0.18s ease;
+    }
+
+    .tool-card--ukaq {
+      background:
+        linear-gradient(#fff, #fff) padding-box,
+        linear-gradient(135deg, #67B0ED, #175283) border-box;
     }
 
     .tool-card:hover {
@@ -105,7 +115,7 @@
       align-items: center;
       gap: 1rem;
       min-height: 76px;
-      margin-bottom: 0.35rem;
+      margin-bottom: 0;
     }
 
     .tool-card-icon-box {
@@ -162,8 +172,25 @@
       color: transparent;
     }
 
+    .tool-card-title-graphic {
+      display: block;
+      max-width: 100%;
+      height: 34px;
+      width: auto;
+      object-fit: contain;
+    }
+
+    .tool-card-title-graphic--sensors-map {
+      height: 58px;
+    }
+
+    .tool-card-title-graphic--de {
+      height: 58px;
+    }
+
     .tool-card-description {
-      margin: 0.8rem 0 0;
+      margin: 0.35rem 0 0;
+      padding-top: 0;
       font-size: 1rem;
       line-height: 1.35;
       color: #111;
@@ -212,17 +239,10 @@
         grid-template-columns: 1fr;
       }
 
-      .tool-card {
-        min-height: auto;
-      }
-
       .tool-card-header {
         justify-content: flex-start;
       }
 
-      .section-logo--de {
-        width: min(100%, 480px);
-      }
     }
   </style>
 </head>
@@ -241,36 +261,36 @@
       </p>
 
       <div class="tool-grid">
-        <a class="tool-card" href="/uk-aq/hex_map.html" aria-label="Hex Map: Compare latest pollutant readings by UK constituencies, countries, and local authorities.">
+        <a class="tool-card tool-card--ukaq" href="/uk-aq/hex_map.html" aria-label="Hex Map: Compare latest pollutant readings by UK constituencies, countries, and local authorities.">
           <div class="tool-card-header">
             <span class="tool-card-icon-box">
               <img class="tool-card-icon" src="sidebar-images/uk-aq-hex-map-icon.svg" alt="">
             </span>
-            <span class="tool-card-title tool-card-title--ukaq">Hex Map</span>
+            <img class="tool-card-title-graphic" src="images/UK-AQ-hex-map.svg" alt="Hex Map">
           </div>
           <p class="tool-card-description">
             Compare latest pollutant readings by UK constituencies, countries, and local authorities.
           </p>
         </a>
 
-        <a class="tool-card" href="/uk-aq/sensors_chart.html" aria-label="Sensors: Browse live and historical readings from selected air quality sensor networks.">
+        <a class="tool-card tool-card--ukaq" href="/uk-aq/sensors_chart.html" aria-label="Sensors: Browse live and historical readings from selected air quality sensor networks.">
           <div class="tool-card-header">
             <span class="tool-card-icon-box">
               <img class="tool-card-icon" src="sidebar-images/uk-aq-sensors-icon.svg" alt="">
             </span>
-            <span class="tool-card-title tool-card-title--ukaq">Sensors</span>
+            <img class="tool-card-title-graphic" src="images/UK-AQ-sensors.svg" alt="Sensors">
           </div>
           <p class="tool-card-description">
             Browse live and historical readings from selected air quality sensor networks.
           </p>
         </a>
 
-        <a class="tool-card" href="/uk-aq/sensors_map.html" aria-label="Sensors Map: View sensor locations and readings on an interactive UK map.">
+        <a class="tool-card tool-card--ukaq" href="/uk-aq/sensors_map.html" aria-label="Sensors Map: View sensor locations and readings on an interactive UK map.">
           <div class="tool-card-header">
             <span class="tool-card-icon-box">
               <img class="tool-card-icon" src="sidebar-images/uk-aq-map-icon.svg" alt="">
             </span>
-            <span class="tool-card-title tool-card-title--ukaq">Sensors Map</span>
+            <img class="tool-card-title-graphic tool-card-title-graphic--sensors-map" src="images/UK-AQ-sensors-map-2line.svg" alt="Sensors Map">
           </div>
           <p class="tool-card-description">
             View sensor locations and readings on an interactive UK map.
@@ -292,7 +312,7 @@
             <span class="tool-card-icon-box">
               <img class="tool-card-icon" src="sidebar-images/Bubble-Chart-Icon.svg" alt="">
             </span>
-            <span class="tool-card-title tool-card-title--de">Bubble Chart</span>
+            <img class="tool-card-title-graphic tool-card-title-graphic--de" src="images/Data-Explorer-BubbleChartv2-2line.svg" alt="Bubble Chart">
           </div>
           <p class="tool-card-description">
             Compare pollutant emissions and activity data from source categories.
@@ -304,7 +324,7 @@
             <span class="tool-card-icon-box">
               <img class="tool-card-icon tool-card-icon--line" src="sidebar-images/Line-Chart-Icon.svg" alt="">
             </span>
-            <span class="tool-card-title tool-card-title--de">Line Chart</span>
+            <img class="tool-card-title-graphic tool-card-title-graphic--de" src="images/Data-Explorer-LineChartv2-2line.svg" alt="Line Chart">
           </div>
           <p class="tool-card-description">
             Track emissions and activity trends over time.
@@ -316,7 +336,7 @@
             <span class="tool-card-icon-box">
               <img class="tool-card-icon tool-card-icon--eco" src="sidebar-images/Stove Ecodesign 430x683.svg" alt="">
             </span>
-            <span class="tool-card-title tool-card-title--de">Ecodesign Replaces</span>
+            <img class="tool-card-title-graphic tool-card-title-graphic--de" src="images/Data-Explorer-EcoReplacesv2-2line.svg" alt="Ecodesign Replaces">
           </div>
           <p class="tool-card-description">
             Explore how appliance replacement scenarios could impact emissions.
