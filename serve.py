@@ -17,6 +17,10 @@ PORT = 8080
 # Proxy /api/aq/... to production Cloudflare Workers
 API_PROXY_PREFIX  = '/api/aq'
 API_PROXY_TARGET  = 'https://cic-test.chronicillnesschannel.co.uk'
+POSTCODE_PROXY_ROUTES = {
+    '/api/postcode_suggest': '/v1/postcode_suggest',
+    '/api/postcode_lookup': '/v1/postcode_lookup',
+}
 
 # URL prefix → absolute filesystem root (longest prefix matched first)
 ROOTS = {
@@ -47,6 +51,11 @@ _env.update(_load_env_file(os.path.join(os.path.dirname(__file__), '.env')))
 CF_CLIENT_ID     = _env.get('CLOUDFLARE_ACCESS_CLIENT_ID', '')
 CF_CLIENT_SECRET = _env.get('CLOUDFLARE_ACCESS_CLIENT_SECRET', '')
 AQ_CACHE_BYPASS_SECRET = _env.get('UK_AQ_CACHE_BYPASS_SECRET', '')
+POSTCODE_UPSTREAM_URL = _env.get(
+    'UK_AQ_POSTCODE_LOOKUP_UPSTREAM_URL',
+    'https://uk-aq-postcode-lookup-r2-api.michael-hinford.workers.dev',
+)
+EDGE_UPSTREAM_SECRET = _env.get('UK_AQ_EDGE_UPSTREAM_SECRET', '')
 TURNSTILE_SITE_KEY = _env.get('UK_AQ_TURNSTILE_SITE_KEY', '')
 TURNSTILE_PLACEHOLDER = "__UK_AQ_TURNSTILE_SITE_KEY__"
 
@@ -95,20 +104,15 @@ class MultiRootHandler(http.server.SimpleHTTPRequestHandler):
             self.wfile.write(rendered)
         return True
 
-    def _proxy_api(self):
-        """Forward /api/aq/... to the production Cloudflare Worker and relay the response."""
-        upstream_url = API_PROXY_TARGET + self.path  # preserves path + query string
+    def _proxy_request(self, upstream_base, upstream_path, extra_headers=None):
+        upstream_url = upstream_base.rstrip('/') + upstream_path
         req_headers = {
             k: v for k, v in self.headers.items()
             if k.lower() not in _HOP_BY_HOP
         }
-        req_headers['Host'] = urlparse(API_PROXY_TARGET).netloc
-        if CF_CLIENT_ID and CF_CLIENT_SECRET:
-            req_headers['CF-Access-Client-Id']     = CF_CLIENT_ID
-            req_headers['CF-Access-Client-Secret'] = CF_CLIENT_SECRET
-        # Trusted server-side header for local-dev bypass in the test worker.
-        if AQ_CACHE_BYPASS_SECRET:
-            req_headers['X-CIC-Local-Dev-Token'] = AQ_CACHE_BYPASS_SECRET
+        req_headers['Host'] = urlparse(upstream_base).netloc
+        if extra_headers:
+            req_headers.update(extra_headers)
 
         body = None
         content_length = int(self.headers.get('Content-Length', 0))
@@ -138,8 +142,42 @@ class MultiRootHandler(http.server.SimpleHTTPRequestHandler):
             print(f'  [proxy] {self.command} {self.path} → connection failed: {e.reason}')
             self.send_error(502, f'API proxy error: {e.reason}')
 
+    def _proxy_api(self):
+        """Forward /api/aq/... to the production Cloudflare Worker and relay the response."""
+        extra_headers = {}
+        if CF_CLIENT_ID and CF_CLIENT_SECRET:
+            extra_headers['CF-Access-Client-Id'] = CF_CLIENT_ID
+            extra_headers['CF-Access-Client-Secret'] = CF_CLIENT_SECRET
+        # Trusted server-side header for local-dev bypass in the test worker.
+        if AQ_CACHE_BYPASS_SECRET:
+            extra_headers['X-CIC-Local-Dev-Token'] = AQ_CACHE_BYPASS_SECRET
+        self._proxy_request(API_PROXY_TARGET, self.path, extra_headers)
+
+    def _proxy_postcode_api(self):
+        """Forward /api/postcode_* to the postcode lookup worker route."""
+        parsed = urlparse(self.path)
+        route = unquote(parsed.path)
+        upstream_route = POSTCODE_PROXY_ROUTES.get(route)
+        if not upstream_route:
+            self.send_error(404)
+            return
+        upstream_path = upstream_route
+        if parsed.query:
+            upstream_path = f'{upstream_path}?{parsed.query}'
+        extra_headers = {}
+        if EDGE_UPSTREAM_SECRET:
+            extra_headers['x-uk-aq-upstream-auth'] = EDGE_UPSTREAM_SECRET
+        self._proxy_request(POSTCODE_UPSTREAM_URL, upstream_path, extra_headers)
+
+    def _is_postcode_proxy_route(self):
+        decoded_path = unquote(urlparse(self.path).path)
+        return decoded_path in POSTCODE_PROXY_ROUTES
+
 
     def do_GET(self):
+        if self._is_postcode_proxy_route():
+            self._proxy_postcode_api()
+            return
         if unquote(urlparse(self.path).path).startswith(API_PROXY_PREFIX):
             self._proxy_api()
             return
@@ -148,6 +186,9 @@ class MultiRootHandler(http.server.SimpleHTTPRequestHandler):
         super().do_GET()
 
     def do_HEAD(self):
+        if self._is_postcode_proxy_route():
+            self.send_error(405)
+            return
         if unquote(urlparse(self.path).path).startswith(API_PROXY_PREFIX):
             self.send_error(405)
             return
@@ -156,12 +197,22 @@ class MultiRootHandler(http.server.SimpleHTTPRequestHandler):
         super().do_HEAD()
 
     def do_POST(self):
+        if self._is_postcode_proxy_route():
+            self._proxy_postcode_api()
+            return
         if unquote(urlparse(self.path).path).startswith(API_PROXY_PREFIX):
             self._proxy_api()
         else:
             self.send_error(405)
 
     def do_OPTIONS(self):
+        if self._is_postcode_proxy_route():
+            self.send_response(204)
+            self.send_header('Access-Control-Allow-Origin', '*')
+            self.send_header('Access-Control-Allow-Methods', 'GET, POST, OPTIONS')
+            self.send_header('Access-Control-Allow-Headers', 'Content-Type, Authorization, x-uk-aq-upstream-auth')
+            self.end_headers()
+            return
         if unquote(urlparse(self.path).path).startswith(API_PROXY_PREFIX):
             self.send_response(204)
             self.send_header('Access-Control-Allow-Origin', '*')
@@ -208,10 +259,15 @@ if __name__ == '__main__':
         print(f'  /data-explorer/  → Data Explorer mk2')
         print(f'  /report/         → Report Form')
         print(f'  /api/aq/...      → proxy → {API_PROXY_TARGET}')
+        print(f'  /api/postcode_*  → proxy → {POSTCODE_UPSTREAM_URL}')
         if CF_CLIENT_ID:
             print(f'  CF service token  → loaded ({CF_CLIENT_ID[:12]}...)')
         else:
             print(f'  CF service token  → NOT FOUND (check .env)')
+        if EDGE_UPSTREAM_SECRET:
+            print(f'  Edge upstream key → loaded ({EDGE_UPSTREAM_SECRET[:10]}...)')
+        else:
+            print(f'  Edge upstream key → NOT FOUND (add UK_AQ_EDGE_UPSTREAM_SECRET)')
         if TURNSTILE_SITE_KEY:
             print(f'  Turnstile key      → loaded ({TURNSTILE_SITE_KEY[:10]}...)')
         else:
