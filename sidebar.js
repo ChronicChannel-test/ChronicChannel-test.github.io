@@ -34,7 +34,7 @@
           external: true,
         },
         { label: 'Resources', iconImg: 'chain-link-icon-grey.svg', href: '/data-explorer/resources/' },
-        { label: 'Contact', iconPlaceholder: true, href: '/contact.html' },
+        { label: 'Contact', iconImg: 'Contacts-Email-icon-cic-web.svg', href: '/contact.html' },
       ],
     },
   ];
