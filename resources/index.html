@@ -20,33 +20,43 @@
   <style>
     body {
       font-family: system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
-      background: #f2f3f5;
+      background: #FBFAF7;
       color: #111827;
       margin: 0;
     }
 
     .chart-shell {
-      width: min(100%, 1220px);
-      margin: 0 auto;
+      width: 100%;
+      max-width: none;
+      margin: 0;
     }
 
     .resources-shell {
       padding: 28px;
       margin: 0;
-      background: #f2f3f5;
+      background: #FBFAF7;
     }
 
     .resources-frame {
       width: 100%;
       margin: 0;
-      padding: 0 150px 0 0;
-      background: #f2f3f5;
+      padding: 0 104px 0 0;
+      background: #FBFAF7;
       border-radius: 6px;
       box-sizing: border-box;
     }
 
     .title-row {
-      margin-bottom: 0.5rem;
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      margin-bottom: 1.5rem;
+    }
+
+    .resources-title-link-icon {
+      height: 42px;
+      width: auto;
+      flex-shrink: 0;
     }
 
     .main-title {
@@ -56,12 +66,19 @@
       font-weight: 700;
     }
 
+    .resources-page-title {
+      height: 42px;
+      width: auto;
+      display: block;
+      max-width: 100%;
+    }
+
     .resources-title {
-      margin: 0 0 1.5rem 0;
+      margin: 0;
     }
 
     .resources-table-section {
-      background: #ffffff;
+      background: #FBFAF7;
       margin-top: 1rem;
     }
 
@@ -93,7 +110,7 @@
       padding: 10px 28px;
       border-radius: 20px;
       border: none;
-      background: #ffffff;
+      background: #FBFAF7;
       box-shadow: none;
     }
 
@@ -243,15 +260,15 @@
       max-width: 140px;
     }
 
-    @media (max-width: 900px) {
-      .resources-frame {
-        padding-right: 0;
-      }
-    }
-
     @media (max-width: 620px) {
       .resources-shell {
         padding: 18px;
+      }
+    }
+
+    @media (max-width: 900px) {
+      .resources-frame {
+        padding-right: 0;
       }
     }
 
@@ -277,7 +294,17 @@
   <main class="chart-shell resources-shell">
     <div class="resources-frame" id="mainContent">
       <div class="title-row">
-        <h2 class="main-title resources-title">Resources</h2>
+        <img
+          class="resources-title-link-icon"
+          src="./images/chain-link-icon-CIC.svg"
+          alt=""
+          aria-hidden="true"
+        >
+        <img
+          class="main-title resources-title resources-page-title"
+          src="./images/CIC -Page-Titles-resources.svg"
+          alt="Resources"
+        >
       </div>
 
       <section class="resources-table-section" aria-label="Organisations focused on wood burning">
@@ -495,6 +522,34 @@
       </section>
     </div>
   </main>
+
+  <script>
+    (function() {
+      function preventHyphenWordSplits() {
+        const containers = document.querySelectorAll(
+          '.resource-section-heading, .resource-info-name, .resource-info-desc'
+        );
+        containers.forEach((container) => {
+          const walker = document.createTreeWalker(container, NodeFilter.SHOW_TEXT);
+          const textNodes = [];
+          let currentNode = walker.nextNode();
+          while (currentNode) {
+            textNodes.push(currentNode);
+            currentNode = walker.nextNode();
+          }
+
+          textNodes.forEach((node) => {
+            node.nodeValue = node.nodeValue.replace(
+              /([A-Za-z])-([A-Za-z])/g,
+              '$1\u2011$2'
+            );
+          });
+        });
+      }
+
+      document.addEventListener('DOMContentLoaded', preventHyphenWordSplits);
+    })();
+  </script>
 
   <script>
     (function() {
