@@ -1,2 +1,4 @@
 .DS_Store
 .env
+/__pycache__
+__pycache__/serve.cpython-314.pyc
