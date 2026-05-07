@@ -54,13 +54,22 @@
     className: 'cic-home-nav-item',
   };
 
+  // ─── Preload sidebar button images ───────────────────────────────────────────
+  [SIDEBAR_ICON_OFF, SIDEBAR_ICON_ON].forEach(path => {
+    const link = document.createElement('link');
+    link.rel = 'preload';
+    link.as = 'image';
+    link.href = location.origin + path;
+    document.head.appendChild(link);
+  });
+
   // ─── State ────────────────────────────────────────────────────────────────────
   const EXPANDED  = 'expanded';
   const COLLAPSED = 'collapsed';
   const MINI      = 'mini';
   const DRAWER    = 'drawer';
-  const HAMBURGER_ICON_OFF = '/sidebar-images/CIC-hamburger-button.svg';
-  const HAMBURGER_ICON_ON = '/sidebar-images/CIC%20Hamburger%20Button-SidebarOn.svg';
+  const SIDEBAR_ICON_OFF = '/sidebar-images/CIC-Sidebar-Button-off.svg';
+  const SIDEBAR_ICON_ON = '/sidebar-images/CIC-Sidebar-Button-on.svg';
 
   let autoCollapseTimer = null;
   let pinnedOpenDesktop = false;
@@ -101,7 +110,7 @@
     if (!img) return;
     const mobileOpen = getBreakpoint() === 'mobile' && document.body.classList.contains('cic-drawer-open');
     const shouldShowOn = pinnedOpenDesktop || mobileOpen;
-    const target = `${location.origin}${shouldShowOn ? HAMBURGER_ICON_ON : HAMBURGER_ICON_OFF}`;
+    const target = `${location.origin}${shouldShowOn ? SIDEBAR_ICON_ON : SIDEBAR_ICON_OFF}`;
     if (img.src !== target) img.src = target;
   }
 
@@ -446,7 +455,7 @@
     const btn = document.createElement('button');
     btn.id = 'cic-hamburger';
     btn.setAttribute('aria-label', 'Toggle navigation');
-    btn.innerHTML = `<img src="${location.origin}${HAMBURGER_ICON_OFF}" alt="Menu">`;
+    btn.innerHTML = `<img src="${location.origin}${SIDEBAR_ICON_OFF}" alt="Menu">`;
 
     // Top-right home logo (hidden on homepage)
     const homeLogo = isHomePage() ? null : (() => {
