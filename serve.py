@@ -26,7 +26,7 @@ POSTCODE_PROXY_ROUTES = {
 
 # URL prefix → absolute filesystem root (longest prefix matched first)
 ROOTS = {
-    '/uk-aq':         '/Users/mikehinford/Dropbox/Projects/CIC Website/CIC Air Quality Networks/CIC UK-AQ Webpage/CIC-test-uk-aq',
+    '/uk-aq':         '/Users/mikehinford/Dropbox/Projects/CIC Website/CIC Air Quality Networks/CIC-UK-AQ Webpage/CIC-test-uk-aq-webpage',
     '/data-explorer': '/Users/mikehinford/Dropbox/Projects/CIC Website/CIC Data Explorer/CIC Data Explorer Mark 2/CIC-test-data-explorer-mk2',
     '/report':        '/Users/mikehinford/Dropbox/Projects/CIC Website/CIC Report Form/CIC-TEST-report-form',
     '/station-snapshot': '/Users/mikehinford/Dropbox/Projects/CIC Website/CIC Air Quality Networks/CIC-test-uk-aq Operations/CIC-test-uk-aq-ops/station_snapshot',
@@ -152,14 +152,31 @@ class MultiRootHandler(http.server.SimpleHTTPRequestHandler):
                         self.send_header(key, val)
                 self.send_header('Access-Control-Allow-Origin', '*')
                 self.end_headers()
-                self.wfile.write(resp.read())
+                if self.command != 'HEAD' and resp.status not in (204, 304):
+                    payload = resp.read()
+                    try:
+                        self.wfile.write(payload)
+                    except (BrokenPipeError, ConnectionResetError):
+                        print(f'  [proxy] {self.command} {self.path} → client disconnected during response write')
         except urllib.error.HTTPError as e:
-            body = e.read()
-            print(f'  [proxy] {self.command} {self.path} → {e.code} upstream error')
-            print(f'  [proxy] response: {body[:300]}')
+            body = b'' if self.command == 'HEAD' else e.read()
+            is_not_modified = (e.code == 304)
+            if is_not_modified:
+                print(f'  [proxy] {self.command} {self.path} → {e.code}')
+            else:
+                print(f'  [proxy] {self.command} {self.path} → {e.code} upstream error')
+                print(f'  [proxy] response: {body[:300]}')
             self.send_response(e.code)
+            for key, val in e.headers.items():
+                if key.lower() not in _HOP_BY_HOP:
+                    self.send_header(key, val)
+            self.send_header('Access-Control-Allow-Origin', '*')
             self.end_headers()
-            self.wfile.write(body)
+            if self.command != 'HEAD' and e.code not in (204, 304) and body:
+                try:
+                    self.wfile.write(body)
+                except (BrokenPipeError, ConnectionResetError):
+                    print(f'  [proxy] {self.command} {self.path} → client disconnected during error response write')
         except urllib.error.URLError as e:
             print(f'  [proxy] {self.command} {self.path} → connection failed: {e.reason}')
             self.send_error(502, f'API proxy error: {e.reason}')
