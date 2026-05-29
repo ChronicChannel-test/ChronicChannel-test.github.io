@@ -29,7 +29,7 @@ ROOTS = {
     '/uk-aq':         '/Users/mikehinford/Dropbox/Projects/CIC Website/CIC Air Quality Networks/CIC-UK-AQ Webpage/CIC-test-uk-aq-webpage',
     '/data-explorer': '/Users/mikehinford/Dropbox/Projects/CIC Website/CIC Data Explorer/CIC Data Explorer Mark 2/CIC-test-data-explorer-mk2',
     '/report':        '/Users/mikehinford/Dropbox/Projects/CIC Website/CIC Report Form/CIC-TEST-report-form',
-    '/station-snapshot': '/Users/mikehinford/Dropbox/Projects/CIC Website/CIC Air Quality Networks/CIC-test-uk-aq Operations/CIC-test-uk-aq-ops/station_snapshot',
+    '/station-snapshot': '/Users/mikehinford/Dropbox/Projects/CIC Website/CIC Air Quality Networks/CIC-test-uk-aq-Operations/CIC-test-uk-aq-ops/station_snapshot',
     '/':                 '/Users/mikehinford/Dropbox/Projects/CIC Website/ChronicChannel-Test Root Repo/ChronicChannel-test.github.io',
 }
 
