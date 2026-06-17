@@ -708,8 +708,8 @@ class MultiRootHandler(http.server.SimpleHTTPRequestHandler):
         aliases = {'24h': '24h', '24hr': '24h', '24hrs': '24h', '24 hours': '24h', '7d': '7d', '7 days': '7d', '31d': '31d', '31 days': '31d', '90d': '90d', '90 days': '90d'}
         return aliases.get(raw, '24h')
 
-    def _v2_headers(self, service_key, schema=UK_AQ_CORE_SCHEMA):
-        return {'apikey': service_key, 'Authorization': f'Bearer {service_key}', 'Accept': 'application/json', 'Accept-Profile': schema, 'Content-Profile': schema, 'Content-Type': 'application/json'}
+    def _v2_headers(self, service_key):
+        return {'apikey': service_key, 'Authorization': f'Bearer {service_key}', 'Accept': 'application/json', 'Accept-Profile': 'uk_aq_public', 'Content-Profile': 'uk_aq_public', 'Content-Type': 'application/json'}
 
     def _connector_label(self, connector_id):
         try:
@@ -765,25 +765,21 @@ class MultiRootHandler(http.server.SimpleHTTPRequestHandler):
         self.send_error(404)
 
     def _v2_station_row(self, row):
-        connector = row.get('connectors') if isinstance(row.get('connectors'), dict) else {}
-        connector_id = row.get('connector_id') or connector.get('id')
-        connector_label = self._connector_label(connector_id) or connector.get('label') or connector.get('name')
-        return {'station_id': row.get('id') or row.get('station_id'), 'station_ref': row.get('station_ref') or '', 'station_name': row.get('station_name') or row.get('label') or row.get('name') or f"station {row.get('id')}", 'connector_id': connector_id, 'connector_label': connector_label}
+        return {'station_id': row.get('id') or row.get('station_id'), 'station_ref': row.get('station_ref'), 'station_name': row.get('station_name') or row.get('label'), 'connector_id': row.get('connector_id'), 'connector_label': self._connector_label(row.get('connector_id'))}
 
     def _serve_station_snapshot_v2_search(self, parsed):
         query = (parse_qs(parsed.query).get('q', [''])[0] or '').strip()
-        result = {'query': query, 'stations': [], 'results': []}
-        if len(query) < 2:
+        result = {'query': query, 'stations': []}
+        if not query:
             self._json_response(json.dumps(result).encode('utf-8')); return
         if STATION_SNAPSHOT_MODE != 'sql' and INGESTDB_SUPABASE_URL and INGESTDB_SERVICE_KEY:
             try:
                 rest = INGESTDB_SUPABASE_URL.rstrip('/') + '/rest/v1'
-                safe = query.replace(',', ' ').replace('*', ' ').replace('(', ' ').replace(')', ' ').strip()
-                ors = ','.join([f'label.ilike.*{safe}*', f'name.ilike.*{safe}*', f'station_ref.ilike.*{safe}*', f'id.eq.{safe if safe.isdigit() else -1}'])
-                qs = urlencode([('or', f'({ors})'), ('select', 'id,station_ref,label,name,connector_id,connectors(id,label,name)'), ('limit', '25'), ('order', 'label.asc')])
-                rows = self._fetch_json(rest + '/stations?' + qs, self._v2_headers(INGESTDB_SERVICE_KEY, UK_AQ_CORE_SCHEMA)) or []
+                ors = ','.join([f'station_name.ilike.*{query}*', f'label.ilike.*{query}*', f'station_ref.ilike.*{query}*'])
+                if query.isdigit(): ors += f',id.eq.{query}'
+                qs = urlencode([('or', f'({ors})'), ('select', 'id,station_ref,station_name,label,connector_id'), ('limit', '25'), ('order', 'station_name.asc')])
+                rows = self._fetch_json(rest + '/stations?' + qs, self._v2_headers(INGESTDB_SERVICE_KEY)) or []
                 result['stations'] = [self._v2_station_row(r) for r in rows]
-                result['results'] = result['stations']
                 self._json_response(json.dumps(result, default=str).encode('utf-8')); return
             except Exception as exc:
                 print(f'  [snapshot-v2] search API mode failed, falling back to SQL mode: {exc}')
@@ -794,9 +790,8 @@ class MultiRootHandler(http.server.SimpleHTTPRequestHandler):
             import psycopg2, psycopg2.extras
             with psycopg2.connect(INGESTDB_DB_URL) as conn, conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
                 like = f'%{query}%'
-                cur.execute("SELECT id, station_ref, label, name, connector_id FROM uk_aq_core.stations WHERE COALESCE(label, '') ILIKE %s OR COALESCE(name, '') ILIKE %s OR station_ref ILIKE %s OR (%s ~ '^[0-9]+$' AND id = %s::int) ORDER BY label LIMIT 25", (like, like, like, query, query if query.isdigit() else '0'))
+                cur.execute("SELECT id, station_ref, station_name, label, connector_id FROM uk_aq_core.stations WHERE station_name ILIKE %s OR COALESCE(label, '') ILIKE %s OR station_ref ILIKE %s OR (%s ~ '^[0-9]+$' AND id = %s::int) ORDER BY station_name LIMIT 25", (like, like, like, query, query if query.isdigit() else '0'))
                 result['stations'] = [self._v2_station_row(dict(r)) for r in cur.fetchall()]
-                result['results'] = result['stations']
         except ImportError:
             result['error'] = 'psycopg2 not installed. Run: pip install psycopg2-binary'
         except Exception as exc:
@@ -835,7 +830,7 @@ class MultiRootHandler(http.server.SimpleHTTPRequestHandler):
         result['selected_timeseries_id'] = int(requested_ts) if requested_ts and requested_ts in ids else (int(ids[0]) if ids else None)
 
     def _v2_rows_via_postgrest(self, result, station_id, pollutant, window, requested_ts):
-        rest = INGESTDB_SUPABASE_URL.rstrip('/') + '/rest/v1'; headers = self._v2_headers(INGESTDB_SERVICE_KEY, UK_AQ_CORE_SCHEMA)
+        rest = INGESTDB_SUPABASE_URL.rstrip('/') + '/rest/v1'; headers = self._v2_headers(INGESTDB_SERVICE_KEY)
         qs = urlencode([('station_id', f'eq.{int(station_id)}'), ('select', '*'), ('order', 'id.asc')])
         all_ts = self._fetch_json(rest + '/timeseries?' + qs, headers) or []
         self._v2_select_timeseries(result, [r for r in all_ts if self._v2_ts_matches(r, pollutant)] or all_ts, requested_ts)
@@ -846,7 +841,7 @@ class MultiRootHandler(http.server.SimpleHTTPRequestHandler):
         ingest_obs = self._fetch_json(rest + '/observations?' + q_obs, headers) or []
         obs_obs = []
         if OBSAQIDB_SUPABASE_URL and OBSAQIDB_SERVICE_KEY:
-            try: obs_obs = self._fetch_json(OBSAQIDB_SUPABASE_URL.rstrip('/') + '/rest/v1/observations?' + q_obs, self._v2_headers(OBSAQIDB_SERVICE_KEY, UK_AQ_PUBLIC_SCHEMA)) or []
+            try: obs_obs = self._fetch_json(OBSAQIDB_SUPABASE_URL.rstrip('/') + '/rest/v1/observations?' + q_obs, self._v2_headers(OBSAQIDB_SERVICE_KEY)) or []
             except Exception: obs_obs = []
         r2_params = {'timeseries_id': selected, 'station_id': station_id, 'pollutant': pollutant, 'from_utc': start, 'to_utc': end, 'row_limit': limit}
         r2_obs = self._v2_fetch_r2_rows(UK_AQ_OBSERVS_HISTORY_R2_API_URL, UK_AQ_OBSERVS_HISTORY_R2_API_TOKEN, r2_params)
