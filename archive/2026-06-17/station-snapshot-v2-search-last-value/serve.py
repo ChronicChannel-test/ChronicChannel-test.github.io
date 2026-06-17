@@ -767,37 +767,10 @@ class MultiRootHandler(http.server.SimpleHTTPRequestHandler):
     def _v2_station_row(self, row):
         return {'station_id': row.get('id') or row.get('station_id'), 'station_ref': row.get('station_ref'), 'station_name': row.get('station_name') or row.get('label'), 'connector_id': row.get('connector_id'), 'connector_label': self._connector_label(row.get('connector_id'))}
 
-    def _v2_station_search_rows_with_last_values(self, station_rows, timeseries_rows, pollutant):
-        latest_by_station = {}
-        for row in timeseries_rows or []:
-            if not self._v2_ts_matches(row, pollutant):
-                continue
-            station_id = row.get('station_id')
-            if station_id is None:
-                continue
-            last_value_at = row.get('last_value_at')
-            current = latest_by_station.get(station_id)
-            if current is None or str(last_value_at or '') > str(current.get('last_value_at') or ''):
-                latest_by_station[station_id] = row
-        stations = []
-        for row in station_rows:
-            station = self._v2_station_row(row)
-            ts = latest_by_station.get(station.get('station_id')) or {}
-            station['last_value'] = ts.get('last_value')
-            station['last_value_at'] = ts.get('last_value_at')
-            station['last_value_timeseries_id'] = ts.get('id') or ts.get('timeseries_id')
-            stations.append(station)
-        return stations
-
     def _serve_station_snapshot_v2_search(self, parsed):
-        params = parse_qs(parsed.query)
-        query = (params.get('q', [''])[0] or '').strip()
-        pollutant = self._normalize_v2_pollutant(params.get('pollutant', [''])[0])
-        result = {'query': query, 'pollutant': pollutant, 'stations': []}
+        query = (parse_qs(parsed.query).get('q', [''])[0] or '').strip()
+        result = {'query': query, 'stations': []}
         if not query:
-            self._json_response(json.dumps(result).encode('utf-8')); return
-        if not pollutant:
-            result['error'] = 'pollutant (pm25, pm10, no2) is required'
             self._json_response(json.dumps(result).encode('utf-8')); return
         if STATION_SNAPSHOT_MODE != 'sql' and INGESTDB_SUPABASE_URL and INGESTDB_SERVICE_KEY:
             try:
@@ -806,13 +779,7 @@ class MultiRootHandler(http.server.SimpleHTTPRequestHandler):
                 if query.isdigit(): ors += f',id.eq.{query}'
                 qs = urlencode([('or', f'({ors})'), ('select', 'id,station_ref,station_name,label,connector_id'), ('limit', '25'), ('order', 'station_name.asc')])
                 rows = self._fetch_json(rest + '/stations?' + qs, self._v2_headers(INGESTDB_SERVICE_KEY)) or []
-                station_ids = [r.get('id') or r.get('station_id') for r in rows if r.get('id') or r.get('station_id')]
-                timeseries = []
-                if station_ids:
-                    id_list = ','.join(str(int(sid)) for sid in station_ids)
-                    q_ts = urlencode([('station_id', f'in.({id_list})'), ('select', '*'), ('order', 'last_value_at.desc.nullslast')])
-                    timeseries = self._fetch_json(rest + '/timeseries?' + q_ts, self._v2_headers(INGESTDB_SERVICE_KEY)) or []
-                result['stations'] = self._v2_station_search_rows_with_last_values(rows, timeseries, pollutant)
+                result['stations'] = [self._v2_station_row(r) for r in rows]
                 self._json_response(json.dumps(result, default=str).encode('utf-8')); return
             except Exception as exc:
                 print(f'  [snapshot-v2] search API mode failed, falling back to SQL mode: {exc}')
@@ -824,13 +791,7 @@ class MultiRootHandler(http.server.SimpleHTTPRequestHandler):
             with psycopg2.connect(INGESTDB_DB_URL) as conn, conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
                 like = f'%{query}%'
                 cur.execute("SELECT id, station_ref, station_name, label, connector_id FROM uk_aq_core.stations WHERE station_name ILIKE %s OR COALESCE(label, '') ILIKE %s OR station_ref ILIKE %s OR (%s ~ '^[0-9]+$' AND id = %s::int) ORDER BY station_name LIMIT 25", (like, like, like, query, query if query.isdigit() else '0'))
-                station_rows = [dict(r) for r in cur.fetchall()]
-                station_ids = [r.get('id') or r.get('station_id') for r in station_rows if r.get('id') or r.get('station_id')]
-                timeseries = []
-                if station_ids:
-                    cur.execute("SELECT * FROM uk_aq_core.timeseries WHERE station_id = ANY(%s) ORDER BY last_value_at DESC NULLS LAST", (station_ids,))
-                    timeseries = [dict(r) for r in cur.fetchall()]
-                result['stations'] = self._v2_station_search_rows_with_last_values(station_rows, timeseries, pollutant)
+                result['stations'] = [self._v2_station_row(dict(r)) for r in cur.fetchall()]
         except ImportError:
             result['error'] = 'psycopg2 not installed. Run: pip install psycopg2-binary'
         except Exception as exc:
