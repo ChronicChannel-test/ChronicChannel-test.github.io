@@ -738,21 +738,47 @@ class MultiRootHandler(http.server.SimpleHTTPRequestHandler):
     def _v2_fetch_r2_rows(self, base_url, token, params):
         if not base_url:
             return []
-        headers = {'Accept': 'application/json'}
+
+        headers = {
+            'Accept': 'application/json',
+        }
+
+        # Optional dedicated token for this endpoint, if one exists.
         if token:
             headers['Authorization'] = f'Bearer {token}'
-        url = base_url.rstrip('/') + '?' + urlencode([(k, v) for k, v in params.items() if v is not None and v != ''])
+
+        # Reuse the same local-dev/auth headers already used elsewhere by serve.py.
+        # These are needed when the target endpoint is behind Cloudflare Access
+        # or protected by the UK AQ upstream auth header.
+        if CF_CLIENT_ID and CF_CLIENT_SECRET:
+            headers['CF-Access-Client-Id'] = CF_CLIENT_ID
+            headers['CF-Access-Client-Secret'] = CF_CLIENT_SECRET
+
+        if AQ_CACHE_BYPASS_SECRET:
+            headers['X-CIC-Local-Dev-Token'] = AQ_CACHE_BYPASS_SECRET
+
+        if EDGE_UPSTREAM_SECRET:
+            headers['x-uk-aq-upstream-auth'] = EDGE_UPSTREAM_SECRET
+
+        url = base_url.rstrip('/') + '?' + urlencode([
+            (k, v) for k, v in params.items()
+            if v is not None and v != ''
+        ])
+
         try:
             payload = self._fetch_json(url, headers)
         except Exception as exc:
             print(f'  [snapshot-v2] optional R2 API failed: {exc}')
             return []
+
         if isinstance(payload, list):
             return payload
+
         if isinstance(payload, dict):
             for key in ('rows', 'observations', 'data'):
                 if isinstance(payload.get(key), list):
                     return payload[key]
+
         return []
 
     def _serve_station_snapshot_v2(self):
