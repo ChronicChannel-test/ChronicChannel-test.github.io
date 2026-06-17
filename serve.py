@@ -799,16 +799,18 @@ class MultiRootHandler(http.server.SimpleHTTPRequestHandler):
             if not self._v2_ts_matches(row, pollutant):
                 continue
             station_id = row.get('station_id')
-            if station_id is None:
+            station_key = str(station_id) if station_id is not None else ''
+            if not station_key:
                 continue
             last_value_at = row.get('last_value_at')
-            current = latest_by_station.get(station_id)
+            current = latest_by_station.get(station_key)
             if current is None or str(last_value_at or '') > str(current.get('last_value_at') or ''):
-                latest_by_station[station_id] = row
+                latest_by_station[station_key] = row
         stations = []
         for row in station_rows:
             station = self._v2_station_row(row)
-            ts = latest_by_station.get(station.get('station_id')) or {}
+            station_key = str(station.get('station_id')) if station.get('station_id') is not None else ''
+            ts = latest_by_station.get(station_key) or {}
             station['last_value'] = ts.get('last_value')
             station['last_value_at'] = ts.get('last_value_at')
             station['last_value_timeseries_id'] = ts.get('id') or ts.get('timeseries_id')
@@ -864,8 +866,31 @@ class MultiRootHandler(http.server.SimpleHTTPRequestHandler):
         self._json_response(json.dumps(result, default=str).encode('utf-8'))
 
     def _v2_ts_matches(self, row, pollutant):
-        hay = ' '.join(str(row.get(k) or '') for k in ('pollutant_code', 'notation', 'phenomena_notation', 'phenomenon_notation', 'label', 'pollutant_label', 'phenomena_label')).lower().replace('.', '')
-        return pollutant in hay
+        fields = (
+            'pollutant', 'pollutant_code', 'pollutant_notation', 'notation',
+            'phenomena_notation', 'phenomenon_notation', 'label', 'pollutant_label',
+            'phenomena_label', 'parameter', 'parameter_code', 'measurement_type',
+            'unit', 'uom',
+        )
+        text_parts = []
+        for key in fields:
+            value = row.get(key)
+            if value is not None:
+                text_parts.append(str(value))
+        for key in ('extras', 'rendering_hints'):
+            value = row.get(key)
+            if isinstance(value, dict):
+                text_parts.append(json.dumps(value, sort_keys=True))
+            elif value is not None:
+                text_parts.append(str(value))
+        hay_text = ' '.join(text_parts).lower().replace('₂', '2').replace('₅', '5').replace('₁', '1').replace('₀', '0')
+        hay = ''.join(ch for ch in hay_text if ch.isalnum())
+        aliases = {
+            'pm25': ('pm25', 'pm2p5', 'particulatematter25', 'fineparticulatematter'),
+            'pm10': ('pm10', 'particulatematter10'),
+            'no2': ('no2', 'nitrogendioxide'),
+        }
+        return any(alias in hay for alias in aliases.get(pollutant, (pollutant,)))
 
     def _serve_station_snapshot_v2_rows(self, parsed):
         params = {k: v[0] for k, v in parse_qs(parsed.query).items()}
@@ -893,6 +918,7 @@ class MultiRootHandler(http.server.SimpleHTTPRequestHandler):
         result['timeseries'] = [{'timeseries_id': r.get('id') or r.get('timeseries_id'), 'connector_id': r.get('connector_id'), 'station_id': r.get('station_id'), 'label': r.get('label') or r.get('pollutant_label') or r.get('notation'), 'uom': r.get('uom') or r.get('unit') or r.get('unit_symbol')} for r in timeseries]
         ids = [str(r['timeseries_id']) for r in result['timeseries'] if r.get('timeseries_id') is not None]
         result['selected_timeseries_id'] = int(requested_ts) if requested_ts and requested_ts in ids else (int(ids[0]) if ids else None)
+        result['selected_timeseries'] = next((r for r in result['timeseries'] if str(r.get('timeseries_id')) == str(result.get('selected_timeseries_id'))), None)
 
     def _v2_rows_via_postgrest(self, result, station_id, pollutant, window, requested_ts):
         rest = INGESTDB_SUPABASE_URL.rstrip('/') + '/rest/v1'; headers = self._v2_headers(INGESTDB_SERVICE_KEY)
@@ -905,15 +931,43 @@ class MultiRootHandler(http.server.SimpleHTTPRequestHandler):
         q_obs = urlencode([('timeseries_id', f'eq.{selected}'), ('observed_at', f'gte.{start}'), ('observed_at', f'lte.{end}'), ('order', 'observed_at.desc'), ('limit', limit), ('select', '*')])
         ingest_obs = self._fetch_json(rest + '/observations?' + q_obs, headers) or []
         obs_obs = []
+        obs_aqi = []
         if OBSAQIDB_SUPABASE_URL and OBSAQIDB_SERVICE_KEY:
-            try: obs_obs = self._fetch_json(OBSAQIDB_SUPABASE_URL.rstrip('/') + '/rest/v1/observations?' + q_obs, self._v2_headers(OBSAQIDB_SERVICE_KEY)) or []
-            except Exception: obs_obs = []
+            obs_headers = self._v2_headers(OBSAQIDB_SERVICE_KEY)
+            obs_rest = OBSAQIDB_SUPABASE_URL.rstrip('/') + '/rest/v1'
+            selected_meta = result.get('selected_timeseries') or {}
+            connector_id = selected_meta.get('connector_id')
+            try:
+                obs_obs = self._post_json(
+                    obs_rest + '/rpc/uk_aq_rpc_observs_timeseries_window',
+                    obs_headers,
+                    {
+                        'p_connector_id': int(connector_id),
+                        'p_timeseries_id': int(selected),
+                        'p_start_utc': start,
+                        'p_end_utc': end,
+                        'p_since_ts': None,
+                        'p_limit': STATION_SNAPSHOT_MAX_ROWS,
+                    },
+                ) or []
+            except Exception as exc:
+                print(f'  [snapshot-v2] ObsAQIDB RPC fetch failed, falling back to direct observations fetch: {exc}')
+                try: obs_obs = self._fetch_json(obs_rest + '/observations?' + q_obs, obs_headers) or []
+                except Exception: obs_obs = []
+            try:
+                q_aqi = urlencode([('timeseries_id', f'eq.{selected}'), ('timestamp_hour_utc', f'gte.{start}'), ('timestamp_hour_utc', f'lte.{end}'), ('order', 'timestamp_hour_utc.desc'), ('limit', limit), ('select', '*')])
+                obs_aqi = self._fetch_json(obs_rest + '/uk_aq_timeseries_aqi_hourly?' + q_aqi, obs_headers) or []
+                for row in obs_aqi:
+                    row.setdefault('source', 'obsaqidb')
+            except Exception as exc:
+                print(f'  [snapshot-v2] ObsAQIDB AQI/hourly fetch failed: {exc}')
+                obs_aqi = []
         r2_params = {'timeseries_id': selected, 'station_id': station_id, 'pollutant': pollutant, 'from_utc': start, 'to_utc': end, 'row_limit': limit}
         r2_obs = self._v2_fetch_r2_rows(UK_AQ_OBSERVS_HISTORY_R2_API_URL, UK_AQ_OBSERVS_HISTORY_R2_API_TOKEN, r2_params)
         r2_aqi = self._v2_fetch_r2_rows(UK_AQ_AQI_HISTORY_R2_API_URL, UK_AQ_AQI_HISTORY_R2_API_TOKEN, r2_params)
         for row in r2_aqi:
             row.setdefault('source', 'r2')
-        self._v2_merge_rows(result, ingest_obs, obs_obs, r2_obs, r2_aqi)
+        self._v2_merge_rows(result, ingest_obs, obs_obs, r2_obs, r2_aqi + obs_aqi)
 
     def _v2_rows_via_sql(self, result, station_id, pollutant, window, requested_ts):
         import psycopg2, psycopg2.extras
@@ -935,28 +989,53 @@ class MultiRootHandler(http.server.SimpleHTTPRequestHandler):
         r2_aqi = self._v2_fetch_r2_rows(UK_AQ_AQI_HISTORY_R2_API_URL, UK_AQ_AQI_HISTORY_R2_API_TOKEN, r2_params)
         for row in r2_aqi:
             row.setdefault('source', 'r2')
+        for row in local_aqi:
+            row.setdefault('source', 'obsaqidb')
         self._v2_merge_rows(result, ingest_obs, obs_obs, r2_obs, r2_aqi + local_aqi)
 
     def _v2_merge_rows(self, result, ingest_obs, obs_obs, r2_obs, aqi_rows):
         merged = {}
-        empty = lambda key: {'observed_at': key, 'ingestdb_observs_value': None, 'obsaqidb_observs_value': None, 'r2_observs_value': None, 'aqi_source': None, 'hourly_mean_ugm3': None, 'rolling24h_mean_ugm3': None, 'hourly_sample_count': None, 'daqi_index_level': None, 'daqi_colour': None, 'eaqi_index_level': None, 'eaqi_colour': None}
-        for source, rows in [('ingestdb_observs_value', ingest_obs), ('obsaqidb_observs_value', obs_obs), ('r2_observs_value', r2_obs)]:
+        empty = lambda key: {'observed_at': key, 'ingestdb_observs_value': None, 'obsaqidb_observs_value': None, 'r2_observs_value': None, 'aqi_source': None, 'hourly_mean_ugm3': None, 'rolling24h_mean_ugm3': None, 'hourly_sample_count': None, 'daqi_index_level': None, 'daqi_colour': None, 'eaqi_index_level': None, 'eaqi_colour': None, 'has_ingestdb_observs_row': False, 'has_obsaqidb_observs_row': False, 'has_r2_observs_row': False, 'has_aqi_row': False}
+
+        def pick(row, *keys):
+            for key in keys:
+                if key in row and row.get(key) is not None:
+                    return row.get(key)
+            for key in keys:
+                if key in row:
+                    return None
+            return None
+
+        for source, flag, rows in [('ingestdb_observs_value', 'has_ingestdb_observs_row', ingest_obs), ('obsaqidb_observs_value', 'has_obsaqidb_observs_row', obs_obs), ('r2_observs_value', 'has_r2_observs_row', r2_obs)]:
             for r in rows:
                 key = self._hour_key(r.get('observed_at') or r.get('timestamp_hour_utc'))
-                if key: merged.setdefault(key, empty(key))[source] = r.get('value')
+                if not key:
+                    continue
+                row = merged.setdefault(key, empty(key))
+                row[source] = r.get('value')
+                row[flag] = True
         for r in aqi_rows:
             key = self._hour_key(r.get('timestamp_hour_utc') or r.get('observed_at'))
             if not key: continue
             row = merged.setdefault(key, empty(key))
-            source = r.get('source') or 'ingestdb'
-            if row.get('aqi_source') and row.get('aqi_source') != source:
+            source = r.get('source') or 'obsaqidb'
+            if row.get('has_aqi_row') and row.get('aqi_source') != source:
                 result['overlap_detected'] = True
             if row.get('aqi_source') == 'r2' and source != 'r2':
                 continue
+            if row.get('has_aqi_row') and row.get('aqi_source') and row.get('aqi_source') != 'r2' and source != 'r2':
+                continue
+            row['has_aqi_row'] = True
             row['aqi_source'] = source
-            row['hourly_mean_ugm3'] = r.get('hourly_mean_ugm3') or r.get('hourly_mean'); row['rolling24h_mean_ugm3'] = r.get('rolling24h_mean_ugm3') or r.get('rolling_24h_mean_ugm3')
-            row['hourly_sample_count'] = r.get('hourly_sample_count') or r.get('sample_count'); row['daqi_index_level'] = r.get('daqi_index_level'); row['eaqi_index_level'] = r.get('eaqi_index_level')
-            row['daqi_colour'] = self._aqi_colour('daqi', row['daqi_index_level']); row['eaqi_colour'] = self._aqi_colour('eaqi', row['eaqi_index_level'])
+            row['hourly_mean_ugm3'] = pick(r, 'hourly_mean_ugm3', 'hourly_mean')
+            row['rolling24h_mean_ugm3'] = pick(r, 'rolling24h_mean_ugm3', 'rolling_24h_mean_ugm3')
+            row['hourly_sample_count'] = pick(r, 'hourly_sample_count', 'sample_count')
+            row['daqi_index_level'] = pick(r, 'daqi_index_level')
+            row['eaqi_index_level'] = pick(r, 'eaqi_index_level')
+            daqi_colour = pick(r, 'daqi_colour', 'daqi_color', 'daqi_index_colour', 'daqi_index_color')
+            eaqi_colour = pick(r, 'eaqi_colour', 'eaqi_color', 'eaqi_index_colour', 'eaqi_index_color')
+            row['daqi_colour'] = daqi_colour if daqi_colour is not None else self._aqi_colour('daqi', row['daqi_index_level'])
+            row['eaqi_colour'] = eaqi_colour if eaqi_colour is not None else self._aqi_colour('eaqi', row['eaqi_index_level'])
         result['rows'] = sorted(merged.values(), key=lambda r: r['observed_at'], reverse=True)[:STATION_SNAPSHOT_MAX_ROWS]
 
     def _json_response(self, body):
