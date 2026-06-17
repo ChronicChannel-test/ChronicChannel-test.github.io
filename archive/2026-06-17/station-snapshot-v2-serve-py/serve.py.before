@@ -30,7 +30,6 @@ ROOTS = {
     '/data-explorer': '/Users/mikehinford/Dropbox/Projects/CIC Website/CIC Data Explorer/CIC Data Explorer Mark 2/CIC-test-data-explorer-mk2',
     '/report':        '/Users/mikehinford/Dropbox/Projects/CIC Website/CIC Report Form/CIC-TEST-report-form',
     '/station-snapshot': '/Users/mikehinford/Dropbox/Projects/CIC Website/CIC Air Quality Networks/CIC-test-uk-aq-Operations/CIC-test-uk-aq-ops/station_snapshot',
-    '/station-snapshot-v2': None,  # populated from OPS_REPO_ROOT below
     '/':                 '/Users/mikehinford/Dropbox/Projects/CIC Website/ChronicChannel-Test Root Repo/ChronicChannel-test.github.io',
 }
 
@@ -50,8 +49,6 @@ def _load_env_file(env_path):
 
 # Ops repo root (one level up from station_snapshot)
 OPS_REPO_ROOT = os.path.dirname(ROOTS['/station-snapshot'].rstrip('/')) if '/station-snapshot' in ROOTS else None
-if OPS_REPO_ROOT:
-    ROOTS['/station-snapshot-v2'] = os.path.join(OPS_REPO_ROOT, 'station_snapshot_v2')
 
 # Cloudflare Access Service Token — loaded from local .env with fallback to UK-AQ .env
 _env = {}
@@ -83,12 +80,6 @@ try:
 except (TypeError, ValueError):
     STATION_SNAPSHOT_MAX_ROWS = 10000
 STATION_SNAPSHOT_MAX_ROWS = max(100, STATION_SNAPSHOT_MAX_ROWS)
-UK_AQ_OBSERVS_HISTORY_R2_API_URL = _env.get('UK_AQ_OBSERVS_HISTORY_R2_API_URL', '')
-UK_AQ_OBSERVS_HISTORY_R2_API_TOKEN = _env.get('UK_AQ_OBSERVS_HISTORY_R2_API_TOKEN', '')
-UK_AQ_AQI_HISTORY_R2_API_URL = _env.get('UK_AQ_AQI_HISTORY_R2_API_URL', '')
-UK_AQ_AQI_HISTORY_R2_API_TOKEN = _env.get('UK_AQ_AQI_HISTORY_R2_API_TOKEN', '')
-UK_AQ_CORE_SCHEMA = _env.get('UK_AQ_CORE_SCHEMA', 'uk_aq_core') or 'uk_aq_core'
-UK_AQ_PUBLIC_SCHEMA = _env.get('UK_AQ_PUBLIC_SCHEMA', 'uk_aq_public') or 'uk_aq_public'
 
 # Headers that must not be forwarded to the upstream or back to the client
 _HOP_BY_HOP = frozenset([
@@ -694,211 +685,6 @@ class MultiRootHandler(http.server.SimpleHTTPRequestHandler):
         body = json.dumps(result, default=str).encode('utf-8')
         self._json_response(body)
 
-    def _is_station_snapshot_v2_route(self):
-        path = unquote(urlparse(self.path).path)
-        return path.startswith('/api/station-snapshot-v2/')
-
-    def _normalize_v2_pollutant(self, value):
-        raw = (value or '').strip().lower().replace('.', '').replace('_', '')
-        aliases = {'pm25': 'pm25', 'pm10': 'pm10', 'no2': 'no2', 'nitrogendioxide': 'no2'}
-        return aliases.get(raw)
-
-    def _normalize_v2_range(self, value):
-        raw = (value or '24h').strip().lower()
-        aliases = {'24h': '24h', '24hr': '24h', '24hrs': '24h', '24 hours': '24h', '7d': '7d', '7 days': '7d', '31d': '31d', '31 days': '31d', '90d': '90d', '90 days': '90d'}
-        return aliases.get(raw, '24h')
-
-    def _v2_headers(self, service_key, schema=UK_AQ_CORE_SCHEMA):
-        return {'apikey': service_key, 'Authorization': f'Bearer {service_key}', 'Accept': 'application/json', 'Accept-Profile': schema, 'Content-Profile': schema, 'Content-Type': 'application/json'}
-
-    def _connector_label(self, connector_id):
-        try:
-            return 'GOV.UK AURN' if int(connector_id) == 1 else f'Connector {connector_id}'
-        except (TypeError, ValueError):
-            return ''
-
-    def _hour_key(self, value):
-        if not value:
-            return None
-        text = str(value).replace('+00:00', 'Z')
-        return text[:13] + ':00:00Z' if len(text) >= 13 else text
-
-    def _aqi_colour(self, scheme, level):
-        if level is None:
-            return None
-        try:
-            n = int(level)
-        except (TypeError, ValueError):
-            return None
-        daqi = {1: '#9CFF9C', 2: '#31FF00', 3: '#31CF00', 4: '#FFFF00', 5: '#FFCF00', 6: '#FF9A00', 7: '#FF6464', 8: '#FF0000', 9: '#990000', 10: '#CE30FF'}
-        eaqi = {1: '#50F0E6', 2: '#50CCAA', 3: '#F0E641', 4: '#FF5050', 5: '#960032', 6: '#7D2181'}
-        return (eaqi if scheme == 'eaqi' else daqi).get(n)
-
-
-    def _v2_fetch_r2_rows(self, base_url, token, params):
-        if not base_url:
-            return []
-        headers = {'Accept': 'application/json'}
-        if token:
-            headers['Authorization'] = f'Bearer {token}'
-        url = base_url.rstrip('/') + '?' + urlencode([(k, v) for k, v in params.items() if v is not None and v != ''])
-        try:
-            payload = self._fetch_json(url, headers)
-        except Exception as exc:
-            print(f'  [snapshot-v2] optional R2 API failed: {exc}')
-            return []
-        if isinstance(payload, list):
-            return payload
-        if isinstance(payload, dict):
-            for key in ('rows', 'observations', 'data'):
-                if isinstance(payload.get(key), list):
-                    return payload[key]
-        return []
-
-    def _serve_station_snapshot_v2(self):
-        parsed = urlparse(self.path)
-        route = unquote(parsed.path).rstrip('/')
-        if route.endswith('/search-stations'):
-            self._serve_station_snapshot_v2_search(parsed); return
-        if route.endswith('/rows'):
-            self._serve_station_snapshot_v2_rows(parsed); return
-        self.send_error(404)
-
-    def _v2_station_row(self, row):
-        connector = row.get('connectors') if isinstance(row.get('connectors'), dict) else {}
-        connector_id = row.get('connector_id') or connector.get('id')
-        connector_label = self._connector_label(connector_id) or connector.get('label') or connector.get('name')
-        return {'station_id': row.get('id') or row.get('station_id'), 'station_ref': row.get('station_ref') or '', 'station_name': row.get('station_name') or row.get('label') or row.get('name') or f"station {row.get('id')}", 'connector_id': connector_id, 'connector_label': connector_label}
-
-    def _serve_station_snapshot_v2_search(self, parsed):
-        query = (parse_qs(parsed.query).get('q', [''])[0] or '').strip()
-        result = {'query': query, 'stations': [], 'results': []}
-        if len(query) < 2:
-            self._json_response(json.dumps(result).encode('utf-8')); return
-        if STATION_SNAPSHOT_MODE != 'sql' and INGESTDB_SUPABASE_URL and INGESTDB_SERVICE_KEY:
-            try:
-                rest = INGESTDB_SUPABASE_URL.rstrip('/') + '/rest/v1'
-                safe = query.replace(',', ' ').replace('*', ' ').replace('(', ' ').replace(')', ' ').strip()
-                ors = ','.join([f'label.ilike.*{safe}*', f'name.ilike.*{safe}*', f'station_ref.ilike.*{safe}*', f'id.eq.{safe if safe.isdigit() else -1}'])
-                qs = urlencode([('or', f'({ors})'), ('select', 'id,station_ref,label,name,connector_id,connectors(id,label,name)'), ('limit', '25'), ('order', 'label.asc')])
-                rows = self._fetch_json(rest + '/stations?' + qs, self._v2_headers(INGESTDB_SERVICE_KEY, UK_AQ_CORE_SCHEMA)) or []
-                result['stations'] = [self._v2_station_row(r) for r in rows]
-                result['results'] = result['stations']
-                self._json_response(json.dumps(result, default=str).encode('utf-8')); return
-            except Exception as exc:
-                print(f'  [snapshot-v2] search API mode failed, falling back to SQL mode: {exc}')
-        if not INGESTDB_DB_URL:
-            result['error'] = 'Database not configured. Set SUPABASE_URL + service key or SUPABASE_DB_URL in .env'
-            self._json_response(json.dumps(result).encode('utf-8')); return
-        try:
-            import psycopg2, psycopg2.extras
-            with psycopg2.connect(INGESTDB_DB_URL) as conn, conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
-                like = f'%{query}%'
-                cur.execute("SELECT id, station_ref, label, name, connector_id FROM uk_aq_core.stations WHERE COALESCE(label, '') ILIKE %s OR COALESCE(name, '') ILIKE %s OR station_ref ILIKE %s OR (%s ~ '^[0-9]+$' AND id = %s::int) ORDER BY label LIMIT 25", (like, like, like, query, query if query.isdigit() else '0'))
-                result['stations'] = [self._v2_station_row(dict(r)) for r in cur.fetchall()]
-                result['results'] = result['stations']
-        except ImportError:
-            result['error'] = 'psycopg2 not installed. Run: pip install psycopg2-binary'
-        except Exception as exc:
-            result['error'] = str(exc)
-        self._json_response(json.dumps(result, default=str).encode('utf-8'))
-
-    def _v2_ts_matches(self, row, pollutant):
-        hay = ' '.join(str(row.get(k) or '') for k in ('pollutant_code', 'notation', 'phenomena_notation', 'phenomenon_notation', 'label', 'pollutant_label', 'phenomena_label')).lower().replace('.', '')
-        return pollutant in hay
-
-    def _serve_station_snapshot_v2_rows(self, parsed):
-        params = {k: v[0] for k, v in parse_qs(parsed.query).items()}
-        station_id = (params.get('station_id') or '').strip(); pollutant = self._normalize_v2_pollutant(params.get('pollutant'))
-        window = self._normalize_v2_range(params.get('range')); requested_ts = (params.get('timeseries_id') or '').strip()
-        result = {'station_id': int(station_id) if station_id.isdigit() else station_id, 'pollutant': pollutant, 'range': window, 'timeseries': [], 'selected_timeseries_id': None, 'overlap_detected': False, 'rows': []}
-        if not station_id or not pollutant:
-            result['error'] = 'station_id and pollutant (pm25, pm10, no2) are required'; self._json_response(json.dumps(result).encode('utf-8')); return
-        try:
-            if STATION_SNAPSHOT_MODE != 'sql' and INGESTDB_SUPABASE_URL and INGESTDB_SERVICE_KEY:
-                self._v2_rows_via_postgrest(result, station_id, pollutant, window, requested_ts)
-            elif INGESTDB_DB_URL:
-                self._v2_rows_via_sql(result, station_id, pollutant, window, requested_ts)
-            else:
-                result['error'] = 'Database not configured. Set SUPABASE_URL + service key or SUPABASE_DB_URL in .env'
-        except Exception as exc:
-            print(f'  [snapshot-v2] rows API mode failed, falling back to SQL mode: {exc}')
-            if INGESTDB_DB_URL:
-                try: self._v2_rows_via_sql(result, station_id, pollutant, window, requested_ts)
-                except Exception as sql_exc: result['error'] = str(sql_exc)
-            else: result['error'] = str(exc)
-        self._json_response(json.dumps(result, default=str).encode('utf-8'))
-
-    def _v2_select_timeseries(self, result, timeseries, requested_ts):
-        result['timeseries'] = [{'timeseries_id': r.get('id') or r.get('timeseries_id'), 'connector_id': r.get('connector_id'), 'station_id': r.get('station_id'), 'label': r.get('label') or r.get('pollutant_label') or r.get('notation'), 'uom': r.get('uom') or r.get('unit') or r.get('unit_symbol')} for r in timeseries]
-        ids = [str(r['timeseries_id']) for r in result['timeseries'] if r.get('timeseries_id') is not None]
-        result['selected_timeseries_id'] = int(requested_ts) if requested_ts and requested_ts in ids else (int(ids[0]) if ids else None)
-
-    def _v2_rows_via_postgrest(self, result, station_id, pollutant, window, requested_ts):
-        rest = INGESTDB_SUPABASE_URL.rstrip('/') + '/rest/v1'; headers = self._v2_headers(INGESTDB_SERVICE_KEY, UK_AQ_CORE_SCHEMA)
-        qs = urlencode([('station_id', f'eq.{int(station_id)}'), ('select', '*'), ('order', 'id.asc')])
-        all_ts = self._fetch_json(rest + '/timeseries?' + qs, headers) or []
-        self._v2_select_timeseries(result, [r for r in all_ts if self._v2_ts_matches(r, pollutant)] or all_ts, requested_ts)
-        selected = result.get('selected_timeseries_id')
-        if not selected: return
-        start, end = self._window_bounds_utc(window); limit = str(STATION_SNAPSHOT_MAX_ROWS)
-        q_obs = urlencode([('timeseries_id', f'eq.{selected}'), ('observed_at', f'gte.{start}'), ('observed_at', f'lte.{end}'), ('order', 'observed_at.desc'), ('limit', limit), ('select', '*')])
-        ingest_obs = self._fetch_json(rest + '/observations?' + q_obs, headers) or []
-        obs_obs = []
-        if OBSAQIDB_SUPABASE_URL and OBSAQIDB_SERVICE_KEY:
-            try: obs_obs = self._fetch_json(OBSAQIDB_SUPABASE_URL.rstrip('/') + '/rest/v1/observations?' + q_obs, self._v2_headers(OBSAQIDB_SERVICE_KEY, UK_AQ_PUBLIC_SCHEMA)) or []
-            except Exception: obs_obs = []
-        r2_params = {'timeseries_id': selected, 'station_id': station_id, 'pollutant': pollutant, 'from_utc': start, 'to_utc': end, 'row_limit': limit}
-        r2_obs = self._v2_fetch_r2_rows(UK_AQ_OBSERVS_HISTORY_R2_API_URL, UK_AQ_OBSERVS_HISTORY_R2_API_TOKEN, r2_params)
-        r2_aqi = self._v2_fetch_r2_rows(UK_AQ_AQI_HISTORY_R2_API_URL, UK_AQ_AQI_HISTORY_R2_API_TOKEN, r2_params)
-        for row in r2_aqi:
-            row.setdefault('source', 'r2')
-        self._v2_merge_rows(result, ingest_obs, obs_obs, r2_obs, r2_aqi)
-
-    def _v2_rows_via_sql(self, result, station_id, pollutant, window, requested_ts):
-        import psycopg2, psycopg2.extras
-        start, end = self._window_bounds_utc(window)
-        with psycopg2.connect(INGESTDB_DB_URL) as conn, conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
-            cur.execute('SELECT * FROM uk_aq_core.timeseries WHERE station_id = %s ORDER BY id', (int(station_id),)); all_ts = [dict(r) for r in cur.fetchall()]
-            self._v2_select_timeseries(result, [r for r in all_ts if self._v2_ts_matches(r, pollutant)] or all_ts, requested_ts)
-            selected = result.get('selected_timeseries_id')
-            if not selected: return
-            cur.execute('SELECT * FROM uk_aq_core.observations WHERE timeseries_id = %s AND observed_at >= %s AND observed_at <= %s ORDER BY observed_at DESC LIMIT %s', (selected, start, end, STATION_SNAPSHOT_MAX_ROWS)); ingest_obs = [dict(r) for r in cur.fetchall()]
-        obs_obs, local_aqi = [], []
-        if OBSAQIDB_DB_URL:
-            with psycopg2.connect(OBSAQIDB_DB_URL) as conn, conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
-                for sql, target in [("SELECT * FROM uk_aq_observs.observations WHERE timeseries_id = %s AND observed_at >= %s AND observed_at <= %s ORDER BY observed_at DESC LIMIT %s", obs_obs), ("SELECT * FROM uk_aq_aqilevels.timeseries_aqi_hourly WHERE timeseries_id = %s AND timestamp_hour_utc >= %s AND timestamp_hour_utc <= %s ORDER BY timestamp_hour_utc DESC LIMIT %s", local_aqi)]:
-                    try: cur.execute(sql, (selected, start, end, STATION_SNAPSHOT_MAX_ROWS)); target.extend(dict(r) for r in cur.fetchall())
-                    except Exception: pass
-        r2_params = {'timeseries_id': selected, 'station_id': station_id, 'pollutant': pollutant, 'from_utc': start, 'to_utc': end, 'row_limit': STATION_SNAPSHOT_MAX_ROWS}
-        r2_obs = self._v2_fetch_r2_rows(UK_AQ_OBSERVS_HISTORY_R2_API_URL, UK_AQ_OBSERVS_HISTORY_R2_API_TOKEN, r2_params)
-        r2_aqi = self._v2_fetch_r2_rows(UK_AQ_AQI_HISTORY_R2_API_URL, UK_AQ_AQI_HISTORY_R2_API_TOKEN, r2_params)
-        for row in r2_aqi:
-            row.setdefault('source', 'r2')
-        self._v2_merge_rows(result, ingest_obs, obs_obs, r2_obs, r2_aqi + local_aqi)
-
-    def _v2_merge_rows(self, result, ingest_obs, obs_obs, r2_obs, aqi_rows):
-        merged = {}
-        empty = lambda key: {'observed_at': key, 'ingestdb_observs_value': None, 'obsaqidb_observs_value': None, 'r2_observs_value': None, 'aqi_source': None, 'hourly_mean_ugm3': None, 'rolling24h_mean_ugm3': None, 'hourly_sample_count': None, 'daqi_index_level': None, 'daqi_colour': None, 'eaqi_index_level': None, 'eaqi_colour': None}
-        for source, rows in [('ingestdb_observs_value', ingest_obs), ('obsaqidb_observs_value', obs_obs), ('r2_observs_value', r2_obs)]:
-            for r in rows:
-                key = self._hour_key(r.get('observed_at') or r.get('timestamp_hour_utc'))
-                if key: merged.setdefault(key, empty(key))[source] = r.get('value')
-        for r in aqi_rows:
-            key = self._hour_key(r.get('timestamp_hour_utc') or r.get('observed_at'))
-            if not key: continue
-            row = merged.setdefault(key, empty(key))
-            source = r.get('source') or 'ingestdb'
-            if row.get('aqi_source') and row.get('aqi_source') != source:
-                result['overlap_detected'] = True
-            if row.get('aqi_source') == 'r2' and source != 'r2':
-                continue
-            row['aqi_source'] = source
-            row['hourly_mean_ugm3'] = r.get('hourly_mean_ugm3') or r.get('hourly_mean'); row['rolling24h_mean_ugm3'] = r.get('rolling24h_mean_ugm3') or r.get('rolling_24h_mean_ugm3')
-            row['hourly_sample_count'] = r.get('hourly_sample_count') or r.get('sample_count'); row['daqi_index_level'] = r.get('daqi_index_level'); row['eaqi_index_level'] = r.get('eaqi_index_level')
-            row['daqi_colour'] = self._aqi_colour('daqi', row['daqi_index_level']); row['eaqi_colour'] = self._aqi_colour('eaqi', row['eaqi_index_level'])
-        result['rows'] = sorted(merged.values(), key=lambda r: r['observed_at'], reverse=True)[:STATION_SNAPSHOT_MAX_ROWS]
-
     def _json_response(self, body):
         self.send_response(200)
         self.send_header('Content-Type', 'application/json; charset=utf-8')
@@ -916,9 +702,6 @@ class MultiRootHandler(http.server.SimpleHTTPRequestHandler):
             return
         if self._is_postcode_proxy_route():
             self._proxy_postcode_api()
-            return
-        if self._is_station_snapshot_v2_route():
-            self._serve_station_snapshot_v2()
             return
         if decoded_path.startswith(API_PROXY_PREFIX):
             self._proxy_api()
@@ -951,13 +734,6 @@ class MultiRootHandler(http.server.SimpleHTTPRequestHandler):
             self.send_error(405)
 
     def do_OPTIONS(self):
-        if self._is_station_snapshot_v2_route():
-            self.send_response(204)
-            self.send_header('Access-Control-Allow-Origin', '*')
-            self.send_header('Access-Control-Allow-Methods', 'GET, OPTIONS')
-            self.send_header('Access-Control-Allow-Headers', 'Content-Type, Authorization')
-            self.end_headers()
-            return
         if self._is_postcode_proxy_route():
             self.send_response(204)
             self.send_header('Access-Control-Allow-Origin', '*')
@@ -1011,7 +787,6 @@ if __name__ == '__main__':
         print(f'  /data-explorer/  → Data Explorer mk2')
         print(f'  /report/         → Report Form')
         print(f'  /station-snapshot/ → Station Snapshot')
-        print(f'  /station-snapshot-v2/ → Station Snapshot v2')
         print(f'  /api/aq/...      → proxy → {API_PROXY_TARGET}')
         print(f'  /api/postcode_*  → proxy → {POSTCODE_UPSTREAM_URL}')
         if CF_CLIENT_ID:
@@ -1035,14 +810,6 @@ if __name__ == '__main__':
             print(f'  Snapshot obs API    → configured')
         else:
             print(f'  Snapshot obs API    → NOT set (add OBS_AQIDB_SUPABASE_URL + OBS_AQIDB_SECRET_KEY)')
-        if UK_AQ_OBSERVS_HISTORY_R2_API_URL:
-            print(f'  Snapshot v2 R2 observations API → configured')
-        else:
-            print(f'  Snapshot v2 R2 observations API → NOT set (optional)')
-        if UK_AQ_AQI_HISTORY_R2_API_URL:
-            print(f'  Snapshot v2 R2 AQI API → configured')
-        else:
-            print(f'  Snapshot v2 R2 AQI API → NOT set (optional)')
         if INGESTDB_DB_URL:
             print(f'  IngestDB           → configured')
         else:
