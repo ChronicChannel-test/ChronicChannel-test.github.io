@@ -87,6 +87,8 @@ UK_AQ_OBSERVS_HISTORY_R2_API_URL = _env.get('UK_AQ_OBSERVS_HISTORY_R2_API_URL', 
 UK_AQ_OBSERVS_HISTORY_R2_API_TOKEN = _env.get('UK_AQ_OBSERVS_HISTORY_R2_API_TOKEN', '')
 UK_AQ_AQI_HISTORY_R2_API_URL = _env.get('UK_AQ_AQI_HISTORY_R2_API_URL', '')
 UK_AQ_AQI_HISTORY_R2_API_TOKEN = _env.get('UK_AQ_AQI_HISTORY_R2_API_TOKEN', '')
+UK_AQ_CORE_SCHEMA = _env.get('UK_AQ_CORE_SCHEMA', 'uk_aq_core') or 'uk_aq_core'
+UK_AQ_PUBLIC_SCHEMA = _env.get('UK_AQ_PUBLIC_SCHEMA', 'uk_aq_public') or 'uk_aq_public'
 
 # Headers that must not be forwarded to the upstream or back to the client
 _HOP_BY_HOP = frozenset([
