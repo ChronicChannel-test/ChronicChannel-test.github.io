@@ -9466,8 +9466,16 @@
       function extractPollutantText(row) {
         return [
           row?.pollutant,
+          row?.pollutant_code,
           row?.pollutant_label,
           row?.phenomenon_label,
+          row?.phenomena_label,
+          row?.measurement_type,
+          row?.parameter,
+          row?.label,
+          row?.uom,
+          row?.unit,
+          row?.unit_symbol,
           row?.phenomenon?.pollutant_label,
           row?.phenomenon?.notation,
           row?.phenomenon?.label,
@@ -11949,6 +11957,10 @@
             stationName,
             networkLabel: resolvePrimaryNetworkLabel(entry.row) || resolveConnectorLabel(entry.row) || "Unknown network",
             timeseriesId: resolveTimeseriesId(entry.row),
+            timeseriesRef: entry.row?.timeseries_ref ?? entry.row?.timeseries?.timeseries_ref ?? null,
+            connectorId: entry.row?.connector_id ?? entry.row?.connectorId ?? entry.row?.network_id ?? null,
+            stationRef: entry.row?.station_ref ?? entry.row?.station?.station_ref ?? null,
+            serviceRef: entry.row?.service_ref ?? entry.row?.serviceRef ?? null,
             value: entry.value,
             updatedText: formatSummaryTimestamp(entry.timestamp),
             timestamp: entry.timestamp instanceof Date ? entry.timestamp.toISOString() : null,
@@ -13994,8 +14006,16 @@
       function extractPollutantText(row) {
         return [
           row?.pollutant,
+          row?.pollutant_code,
           row?.pollutant_label,
           row?.phenomenon_label,
+          row?.phenomena_label,
+          row?.measurement_type,
+          row?.parameter,
+          row?.label,
+          row?.uom,
+          row?.unit,
+          row?.unit_symbol,
           row?.phenomenon?.pollutant_label,
           row?.phenomenon?.notation,
           row?.phenomenon?.label,
@@ -16994,6 +17014,10 @@
             stationName,
             networkLabel: resolvePrimaryNetworkLabel(entry.row) || resolveConnectorLabel(entry.row) || "Unknown network",
             timeseriesId: resolveTimeseriesId(entry.row),
+            timeseriesRef: entry.row?.timeseries_ref ?? entry.row?.timeseries?.timeseries_ref ?? null,
+            connectorId: entry.row?.connector_id ?? entry.row?.connectorId ?? entry.row?.network_id ?? null,
+            stationRef: entry.row?.station_ref ?? entry.row?.station?.station_ref ?? null,
+            serviceRef: entry.row?.service_ref ?? entry.row?.serviceRef ?? null,
             value: entry.value,
             updatedText: formatSummaryTimestamp(entry.timestamp),
             timestamp: entry.timestamp instanceof Date ? entry.timestamp.toISOString() : null,
@@ -19572,6 +19596,11 @@
         url.searchParams.set("grain", "hourly");
         url.searchParams.set("timeseries_id", entry.timeseriesId);
         url.searchParams.set("entity", entry.timeseriesId);
+        if (entry.timeseriesRef) url.searchParams.set("timeseries_ref", entry.timeseriesRef);
+        if (getEntryStationId(entry)) url.searchParams.set("station_id", getEntryStationId(entry));
+        if (getEntryConnectorId(entry)) url.searchParams.set("connector_id", getEntryConnectorId(entry));
+        if (entry.stationRef) url.searchParams.set("station_ref", entry.stationRef);
+        if (entry.serviceRef) url.searchParams.set("service_ref", entry.serviceRef);
         url.searchParams.set("pollutant", pollutantKey);
         url.searchParams.set("row_limit", String(AQI_HISTORY_ROW_LIMIT));
         url.searchParams.set("from_utc", range.startIso);
