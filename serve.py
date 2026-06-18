@@ -899,6 +899,9 @@ class MultiRootHandler(http.server.SimpleHTTPRequestHandler):
         if isinstance(payload, dict):
             meta = payload.get('meta') if isinstance(payload.get('meta'), dict) else payload
             coverage = meta.get('coverage') if isinstance(meta.get('coverage'), dict) else {}
+            for key in ('source_mode', 'used_r2', 'used_supabase', 'source_routing_decision'):
+                if key in meta:
+                    debug[key] = meta.get(key)
             candidates = [coverage.get('manifest_key'), meta.get('manifest_key'), coverage.get('source_path'), meta.get('source_path'), coverage.get('history_prefix'), meta.get('history_prefix')]
             debug['r2_candidate_keys_checked'] = [c for c in candidates if c][:10]
             debug['r2_candidate_key_count'] = len([c for c in candidates if c])
@@ -1214,7 +1217,7 @@ class MultiRootHandler(http.server.SimpleHTTPRequestHandler):
         r2_aqi = self._v2_fetch_r2_rows(UK_AQ_AQI_HISTORY_R2_API_URL, UK_AQ_AQI_HISTORY_R2_API_TOKEN, r2_aqi_params)
         for row in r2_aqi:
             row.setdefault('source', 'r2')
-        result.setdefault('debug', {}).update({'r2_row_count': len(r2_obs), 'aqi_row_count': len(r2_aqi) + len(obs_aqi)})
+        result.setdefault('debug', {}).update({'r2_row_count': len(r2_obs), 'r2_aqi_row_count': len(r2_aqi), 'obsaqidb_aqi_row_count': len(obs_aqi), 'aqi_row_count': len(r2_aqi) + len(obs_aqi), 'aqi_overlap_detected': bool(r2_aqi and obs_aqi), 'r2_aqi_lookup_key_or_filter': r2_aqi_params})
         self._v2_merge_rows(result, ingest_obs, obs_obs, r2_obs, r2_aqi + obs_aqi)
 
     def _v2_rows_via_sql(self, result, station_id, pollutant, window, requested_ts, start, end):
@@ -1251,7 +1254,7 @@ class MultiRootHandler(http.server.SimpleHTTPRequestHandler):
             row.setdefault('source', 'r2')
         for row in local_aqi:
             row.setdefault('source', 'obsaqidb')
-        result.setdefault('debug', {}).update({'r2_row_count': len(r2_obs), 'aqi_row_count': len(r2_aqi) + len(local_aqi)})
+        result.setdefault('debug', {}).update({'r2_row_count': len(r2_obs), 'r2_aqi_row_count': len(r2_aqi), 'obsaqidb_aqi_row_count': len(local_aqi), 'aqi_row_count': len(r2_aqi) + len(local_aqi), 'aqi_overlap_detected': bool(r2_aqi and local_aqi), 'r2_aqi_lookup_key_or_filter': r2_aqi_params})
         self._v2_merge_rows(result, ingest_obs, obs_obs, r2_obs, r2_aqi + local_aqi)
 
     def _v2_merge_rows(self, result, ingest_obs, obs_obs, r2_obs, aqi_rows):
