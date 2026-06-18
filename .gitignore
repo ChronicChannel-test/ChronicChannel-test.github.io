@@ -4,3 +4,4 @@
 __pycache__/serve.cpython-314.pyc
 /__pycache__
 *.pyc
+*.redact

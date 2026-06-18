@@ -91,6 +91,11 @@ UK_AQ_AQI_HISTORY_R2_API_URL = _env.get('UK_AQ_AQI_HISTORY_R2_API_URL', '')
 UK_AQ_AQI_HISTORY_R2_API_TOKEN = _env.get('UK_AQ_AQI_HISTORY_R2_API_TOKEN', '')
 UK_AQ_CORE_SCHEMA = _env.get('UK_AQ_CORE_SCHEMA', 'uk_aq_core') or 'uk_aq_core'
 UK_AQ_PUBLIC_SCHEMA = _env.get('UK_AQ_PUBLIC_SCHEMA', 'uk_aq_public') or 'uk_aq_public'
+LOCAL_DEV_USER_AGENT = _env.get(
+    'UK_AQ_LOCAL_DEV_USER_AGENT',
+    'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 '
+    '(KHTML, like Gecko) Chrome/126 Safari/537.36 CIC-LocalDev/1.0',
+)
 
 # Headers that must not be forwarded to the upstream or back to the client
 _HOP_BY_HOP = frozenset([
@@ -286,8 +291,19 @@ class MultiRootHandler(http.server.SimpleHTTPRequestHandler):
             return None
         return parsed
 
+    def _outbound_headers(self, url, headers):
+        out = dict(headers or {})
+        host = urlparse(url).netloc.lower()
+        needs_cloudflare_user_agent = (
+            host.endswith('workers.dev')
+            or host.endswith('chronicillnesschannel.co.uk')
+        )
+        if needs_cloudflare_user_agent and not any(k.lower() == 'user-agent' for k in out):
+            out['User-Agent'] = LOCAL_DEV_USER_AGENT
+        return out
+
     def _fetch_json(self, url, headers, timeout=45):
-        request = urllib.request.Request(url, method='GET', headers=headers)
+        request = urllib.request.Request(url, method='GET', headers=self._outbound_headers(url, headers))
         with urllib.request.urlopen(request, timeout=timeout) as response:
             body = response.read().decode('utf-8')
             return json.loads(body) if body else None
@@ -296,7 +312,7 @@ class MultiRootHandler(http.server.SimpleHTTPRequestHandler):
         request = urllib.request.Request(
             url,
             method='POST',
-            headers=headers,
+            headers=self._outbound_headers(url, headers),
             data=json.dumps(payload).encode('utf-8'),
         )
         with urllib.request.urlopen(request, timeout=timeout) as response:
@@ -710,6 +726,19 @@ class MultiRootHandler(http.server.SimpleHTTPRequestHandler):
         aliases = {'24h': '24h', '24hr': '24h', '24hrs': '24h', '24 hours': '24h', '7d': '7d', '7 days': '7d', '31d': '31d', '31 days': '31d', '90d': '90d', '90 days': '90d'}
         return aliases.get(raw, '24h')
 
+    def _v2_bounds_from_params(self, window, params):
+        start_raw = params.get('start_utc') or params.get('from_utc') or params.get('start') or params.get('from')
+        end_raw = params.get('end_utc') or params.get('to_utc') or params.get('end') or params.get('to')
+        if start_raw and end_raw:
+            start_dt = self._parse_utc_datetime(start_raw)
+            end_dt = self._parse_utc_datetime(end_raw)
+            if start_dt and end_dt and end_dt > start_dt:
+                return (
+                    start_dt.isoformat().replace('+00:00', 'Z'),
+                    end_dt.isoformat().replace('+00:00', 'Z'),
+                )
+        return self._window_bounds_utc(window)
+
     def _v2_headers(self, service_key):
         return {'apikey': service_key, 'Authorization': f'Bearer {service_key}', 'Accept': 'application/json', 'Accept-Profile': 'uk_aq_public', 'Content-Profile': 'uk_aq_public', 'Content-Type': 'application/json'}
 
@@ -827,22 +856,27 @@ class MultiRootHandler(http.server.SimpleHTTPRequestHandler):
         # This mirrors hex_map.html buildObservationSeriesRequestUrl(): /api/aq/timeseries
         # with timeseries_id, pollutant, start, end, and compact format.  That route
         # already performs the R2 key discovery used by the chart line.
-        query = urlencode([
+        query_items = [
             ('timeseries_id', params.get('timeseries_id')),
+            ('connector_id', params.get('connector_id')),
             ('pollutant', params.get('pollutant')),
             ('start', params.get('from_utc')),
             ('end', params.get('to_utc')),
             ('format', 'compact'),
-        ])
+            ('debug', '1'),
+        ]
+        query = urlencode([(k, v) for k, v in query_items if v is not None and v != ''])
         url = API_PROXY_TARGET.rstrip('/') + API_PROXY_PREFIX + '/timeseries?' + query
         debug = {
             'chart_history_route_used': API_PROXY_PREFIX + '/timeseries',
             'chart_history_params_equivalent': {
                 'timeseries_id': params.get('timeseries_id'),
+                'connector_id': params.get('connector_id'),
                 'pollutant': params.get('pollutant'),
                 'start': params.get('from_utc'),
                 'end': params.get('to_utc'),
                 'format': 'compact',
+                'debug': '1',
             },
             'r2_candidate_keys_checked': [],
             'r2_candidate_key_count': 0,
@@ -1072,17 +1106,18 @@ class MultiRootHandler(http.server.SimpleHTTPRequestHandler):
         result = {'station_id': int(station_id) if station_id.isdigit() else station_id, 'pollutant': pollutant, 'range': window, 'timeseries': [], 'selected_timeseries_id': None, 'overlap_detected': False, 'rows': [], 'debug': {'config': self._v2_config_status()}}
         if not station_id or not pollutant:
             result['error'] = 'station_id and pollutant (pm25, pm10, no2) are required'; self._json_response(json.dumps(result).encode('utf-8')); return
+        start, end = self._v2_bounds_from_params(window, params)
         try:
             if STATION_SNAPSHOT_MODE != 'sql' and INGESTDB_SUPABASE_URL and INGESTDB_SERVICE_KEY:
-                self._v2_rows_via_postgrest(result, station_id, pollutant, window, requested_ts)
+                self._v2_rows_via_postgrest(result, station_id, pollutant, window, requested_ts, start, end)
             elif INGESTDB_DB_URL:
-                self._v2_rows_via_sql(result, station_id, pollutant, window, requested_ts)
+                self._v2_rows_via_sql(result, station_id, pollutant, window, requested_ts, start, end)
             else:
                 result['error'] = 'Database not configured. Set SUPABASE_URL + service key or SUPABASE_DB_URL in .env'
         except Exception as exc:
             print(f'  [snapshot-v2] rows API mode failed, falling back to SQL mode: {exc}')
             if INGESTDB_DB_URL:
-                try: self._v2_rows_via_sql(result, station_id, pollutant, window, requested_ts)
+                try: self._v2_rows_via_sql(result, station_id, pollutant, window, requested_ts, start, end)
                 except Exception as sql_exc: result['error'] = str(sql_exc)
             else: result['error'] = str(exc)
         self._json_response(json.dumps(result, default=str).encode('utf-8'))
@@ -1110,7 +1145,7 @@ class MultiRootHandler(http.server.SimpleHTTPRequestHandler):
         if not ids:
             result['message'] = 'No selected pollutant timeseries is available for this station.'
 
-    def _v2_rows_via_postgrest(self, result, station_id, pollutant, window, requested_ts):
+    def _v2_rows_via_postgrest(self, result, station_id, pollutant, window, requested_ts, start, end):
         rest = INGESTDB_SUPABASE_URL.rstrip('/') + '/rest/v1'; headers = self._v2_headers(INGESTDB_SERVICE_KEY)
         qs = urlencode([('station_id', f'eq.{int(station_id)}'), ('select', '*'), ('order', 'id.asc')])
         station_meta = {}
@@ -1126,7 +1161,7 @@ class MultiRootHandler(http.server.SimpleHTTPRequestHandler):
         self._v2_select_timeseries(result, [r for r in all_ts if self._v2_ts_matches(r, pollutant)], requested_ts)
         selected = result.get('selected_timeseries_id')
         if not selected: return
-        start, end = self._window_bounds_utc(window); limit = str(STATION_SNAPSHOT_MAX_ROWS)
+        limit = str(STATION_SNAPSHOT_MAX_ROWS)
         result.setdefault('debug', {}).update({'range_start_utc': start, 'range_end_utc': end})
         q_obs = urlencode([('timeseries_id', f'eq.{selected}'), ('observed_at', f'gte.{start}'), ('observed_at', f'lte.{end}'), ('order', 'observed_at.desc'), ('limit', limit), ('select', '*')])
         ingest_obs = self._fetch_json(rest + '/observations?' + q_obs, headers) or []
@@ -1163,7 +1198,7 @@ class MultiRootHandler(http.server.SimpleHTTPRequestHandler):
                 print(f'  [snapshot-v2] ObsAQIDB AQI/hourly fetch failed: {exc}')
                 obs_aqi = []
         selected_meta = result.get('selected_timeseries') or {}
-        r2_params = {'timeseries_id': selected, 'timeseries_ref': selected_meta.get('timeseries_ref'), 'station_id': station_id, 'station_ref': selected_meta.get('station_ref'), 'connector_id': selected_meta.get('connector_id'), 'service_ref': selected_meta.get('service_ref'), 'phenomenon_id': selected_meta.get('phenomenon_id'), 'pollutant': pollutant, 'from_utc': start, 'to_utc': end, 'row_limit': limit}
+        r2_params = {'timeseries_id': selected, 'timeseries_ref': selected_meta.get('timeseries_ref'), 'station_id': station_id, 'station_ref': selected_meta.get('station_ref'), 'connector_id': selected_meta.get('connector_id'), 'service_ref': selected_meta.get('service_ref'), 'phenomenon_id': selected_meta.get('phenomenon_id'), 'pollutant': pollutant, 'from_utc': start, 'to_utc': end, 'start_utc': start, 'end_utc': end, 'row_limit': limit, 'debug': '1'}
         debug = result.setdefault('debug', {})
         debug.update({'r2_lookup_key_or_filter': r2_params, 'ingestdb_row_count': len(ingest_obs), 'obsaqidb_row_count': len(obs_obs)})
         if not UK_AQ_OBSERVS_HISTORY_R2_API_URL or not UK_AQ_OBSERVS_HISTORY_R2_API_TOKEN:
@@ -1174,15 +1209,16 @@ class MultiRootHandler(http.server.SimpleHTTPRequestHandler):
         result.setdefault('debug', {}).update(chart_debug)
         if not r2_obs:
             r2_obs = self._v2_fetch_r2_rows(UK_AQ_OBSERVS_HISTORY_R2_API_URL, UK_AQ_OBSERVS_HISTORY_R2_API_TOKEN, r2_params)
-        r2_aqi = self._v2_fetch_r2_rows(UK_AQ_AQI_HISTORY_R2_API_URL, UK_AQ_AQI_HISTORY_R2_API_TOKEN, r2_params)
+        r2_aqi_params = dict(r2_params)
+        r2_aqi_params['format'] = 'objects'
+        r2_aqi = self._v2_fetch_r2_rows(UK_AQ_AQI_HISTORY_R2_API_URL, UK_AQ_AQI_HISTORY_R2_API_TOKEN, r2_aqi_params)
         for row in r2_aqi:
             row.setdefault('source', 'r2')
         result.setdefault('debug', {}).update({'r2_row_count': len(r2_obs), 'aqi_row_count': len(r2_aqi) + len(obs_aqi)})
         self._v2_merge_rows(result, ingest_obs, obs_obs, r2_obs, r2_aqi + obs_aqi)
 
-    def _v2_rows_via_sql(self, result, station_id, pollutant, window, requested_ts):
+    def _v2_rows_via_sql(self, result, station_id, pollutant, window, requested_ts, start, end):
         import psycopg2, psycopg2.extras
-        start, end = self._window_bounds_utc(window)
         result.setdefault('debug', {}).update({'range_start_utc': start, 'range_end_utc': end})
         with psycopg2.connect(INGESTDB_DB_URL) as conn, conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
             cur.execute('SELECT t.*, s.station_ref FROM uk_aq_core.timeseries t LEFT JOIN uk_aq_core.stations s ON s.id = t.station_id WHERE t.station_id = %s ORDER BY t.id', (int(station_id),)); all_ts = [dict(r) for r in cur.fetchall()]
@@ -1197,7 +1233,7 @@ class MultiRootHandler(http.server.SimpleHTTPRequestHandler):
                     try: cur.execute(sql, (selected, start, end, STATION_SNAPSHOT_MAX_ROWS)); target.extend(dict(r) for r in cur.fetchall())
                     except Exception: pass
         selected_meta = result.get('selected_timeseries') or {}
-        r2_params = {'timeseries_id': selected, 'timeseries_ref': selected_meta.get('timeseries_ref'), 'station_id': station_id, 'station_ref': selected_meta.get('station_ref'), 'connector_id': selected_meta.get('connector_id'), 'service_ref': selected_meta.get('service_ref'), 'phenomenon_id': selected_meta.get('phenomenon_id'), 'pollutant': pollutant, 'from_utc': start, 'to_utc': end, 'row_limit': STATION_SNAPSHOT_MAX_ROWS}
+        r2_params = {'timeseries_id': selected, 'timeseries_ref': selected_meta.get('timeseries_ref'), 'station_id': station_id, 'station_ref': selected_meta.get('station_ref'), 'connector_id': selected_meta.get('connector_id'), 'service_ref': selected_meta.get('service_ref'), 'phenomenon_id': selected_meta.get('phenomenon_id'), 'pollutant': pollutant, 'from_utc': start, 'to_utc': end, 'start_utc': start, 'end_utc': end, 'row_limit': STATION_SNAPSHOT_MAX_ROWS, 'debug': '1'}
         debug = result.setdefault('debug', {})
         debug.update({'r2_lookup_key_or_filter': r2_params, 'ingestdb_row_count': len(ingest_obs), 'obsaqidb_row_count': len(obs_obs)})
         if not UK_AQ_OBSERVS_HISTORY_R2_API_URL or not UK_AQ_OBSERVS_HISTORY_R2_API_TOKEN:
@@ -1208,7 +1244,9 @@ class MultiRootHandler(http.server.SimpleHTTPRequestHandler):
         result.setdefault('debug', {}).update(chart_debug)
         if not r2_obs:
             r2_obs = self._v2_fetch_r2_rows(UK_AQ_OBSERVS_HISTORY_R2_API_URL, UK_AQ_OBSERVS_HISTORY_R2_API_TOKEN, r2_params)
-        r2_aqi = self._v2_fetch_r2_rows(UK_AQ_AQI_HISTORY_R2_API_URL, UK_AQ_AQI_HISTORY_R2_API_TOKEN, r2_params)
+        r2_aqi_params = dict(r2_params)
+        r2_aqi_params['format'] = 'objects'
+        r2_aqi = self._v2_fetch_r2_rows(UK_AQ_AQI_HISTORY_R2_API_URL, UK_AQ_AQI_HISTORY_R2_API_TOKEN, r2_aqi_params)
         for row in r2_aqi:
             row.setdefault('source', 'r2')
         for row in local_aqi:
