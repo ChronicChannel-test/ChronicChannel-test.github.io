@@ -739,6 +739,120 @@ class MultiRootHandler(http.server.SimpleHTTPRequestHandler):
         return (eaqi if scheme == 'eaqi' else daqi).get(n)
 
 
+
+    def _v2_pollutant_label(self, pollutant):
+        return {'pm25': 'PM2.5', 'pm10': 'PM10', 'no2': 'NO2'}.get(pollutant, pollutant or '')
+
+    def _parse_utc_datetime(self, value):
+        if not value:
+            return None
+        text = str(value).strip()
+        if not text:
+            return None
+        if text.endswith('Z'):
+            text = text[:-1] + '+00:00'
+        try:
+            parsed = datetime.datetime.fromisoformat(text)
+        except ValueError:
+            return None
+        if parsed.tzinfo is None:
+            parsed = parsed.replace(tzinfo=datetime.timezone.utc)
+        return parsed.astimezone(datetime.timezone.utc)
+
+    def _v2_chart_history_headers(self):
+        headers = {'Accept': 'application/json'}
+        if CF_CLIENT_ID and CF_CLIENT_SECRET:
+            headers['CF-Access-Client-Id'] = CF_CLIENT_ID
+            headers['CF-Access-Client-Secret'] = CF_CLIENT_SECRET
+        if AQ_CACHE_BYPASS_SECRET:
+            headers['X-CIC-Local-Dev-Token'] = AQ_CACHE_BYPASS_SECRET
+        if EDGE_UPSTREAM_SECRET:
+            headers['x-uk-aq-upstream-auth'] = EDGE_UPSTREAM_SECRET
+        return headers
+
+    def _v2_compact_field(self, row, columns, *names):
+        if isinstance(row, dict):
+            for name in names:
+                if row.get(name) is not None:
+                    return row.get(name)
+            return None
+        if isinstance(row, list):
+            for name in names:
+                if name in columns:
+                    idx = columns.index(name)
+                    if idx < len(row):
+                        return row[idx]
+        return None
+
+    def _v2_rows_from_chart_history_payload(self, payload):
+        if isinstance(payload, list):
+            rows = payload
+            columns = []
+        elif isinstance(payload, dict):
+            columns = payload.get('columns') if isinstance(payload.get('columns'), list) else []
+            rows = next((payload.get(k) for k in ('rows', 'observations', 'data', 'points') if isinstance(payload.get(k), list)), [])
+        else:
+            return []
+        out = []
+        for row in rows:
+            observed_at = self._v2_compact_field(row, columns, 'observed_at', 'timestamp_hour_utc', 'period_start_utc', 'time')
+            value = self._v2_compact_field(row, columns, 'value', 'observed_value', 'observs_value', 'mean_value', 'hourly_mean_ugm3')
+            if observed_at is None or value is None:
+                continue
+            out.append({'observed_at': observed_at, 'value': value, 'source': 'r2_chart_history'})
+        return out
+
+    def _v2_fetch_chart_history_rows(self, params):
+        # This mirrors hex_map.html buildObservationSeriesRequestUrl(): /api/aq/timeseries
+        # with timeseries_id, pollutant, start, end, and compact format.  That route
+        # already performs the R2 key discovery used by the chart line.
+        query = urlencode([
+            ('timeseries_id', params.get('timeseries_id')),
+            ('pollutant', params.get('pollutant')),
+            ('start', params.get('from_utc')),
+            ('end', params.get('to_utc')),
+            ('format', 'compact'),
+        ])
+        url = API_PROXY_TARGET.rstrip('/') + API_PROXY_PREFIX + '/timeseries?' + query
+        debug = {
+            'chart_history_route_used': API_PROXY_PREFIX + '/timeseries',
+            'chart_history_params_equivalent': {
+                'timeseries_id': params.get('timeseries_id'),
+                'pollutant': params.get('pollutant'),
+                'start': params.get('from_utc'),
+                'end': params.get('to_utc'),
+                'format': 'compact',
+            },
+            'r2_candidate_keys_checked': [],
+            'r2_candidate_key_count': 0,
+            'r2_candidate_manifest_matches': [],
+            'r2_candidate_manifest_match_count': 0,
+            'r2_first_matching_key': None,
+            'r2_first_matching_key_reason': None,
+            'r2_object_rows_read': 0,
+            'r2_rows_after_time_filter': 0,
+        }
+        try:
+            payload = self._fetch_json(url, self._v2_chart_history_headers())
+        except Exception as exc:
+            debug['chart_history_error'] = str(exc)
+            print(f'  [snapshot-v2] chart-history R2 fetch failed: {exc}')
+            return [], debug
+        if isinstance(payload, dict):
+            meta = payload.get('meta') if isinstance(payload.get('meta'), dict) else payload
+            coverage = meta.get('coverage') if isinstance(meta.get('coverage'), dict) else {}
+            candidates = [coverage.get('manifest_key'), meta.get('manifest_key'), coverage.get('source_path'), meta.get('source_path'), coverage.get('history_prefix'), meta.get('history_prefix')]
+            debug['r2_candidate_keys_checked'] = [c for c in candidates if c][:10]
+            debug['r2_candidate_key_count'] = len([c for c in candidates if c])
+            debug['r2_first_matching_key'] = next((c for c in candidates if c), None)
+            debug['r2_first_matching_key_reason'] = 'chart-history timeseries_id lookup via /api/aq/timeseries' if debug['r2_first_matching_key'] else ('chart-history returned rows without key metadata' if self._v2_rows_from_chart_history_payload(payload) else None)
+            debug['r2_object_rows_read'] = meta.get('row_count') or coverage.get('matched_rows') or 0
+        rows = self._v2_rows_from_chart_history_payload(payload)
+        debug['r2_rows_after_time_filter'] = len(rows)
+        if rows and not debug['r2_first_matching_key_reason']:
+            debug['r2_first_matching_key_reason'] = 'exact selected_timeseries_id match through chart history route'
+        return rows, debug
+
     def _v2_fetch_r2_rows(self, base_url, token, params):
         if not base_url:
             return []
@@ -989,7 +1103,7 @@ class MultiRootHandler(http.server.SimpleHTTPRequestHandler):
         selected = result.get('selected_timeseries_id')
         if not selected: return
         start, end = self._window_bounds_utc(window); limit = str(STATION_SNAPSHOT_MAX_ROWS)
-        result.setdefault('debug', {}).update({'range_start': start, 'range_end': end})
+        result.setdefault('debug', {}).update({'range_start_utc': start, 'range_end_utc': end})
         q_obs = urlencode([('timeseries_id', f'eq.{selected}'), ('observed_at', f'gte.{start}'), ('observed_at', f'lte.{end}'), ('order', 'observed_at.desc'), ('limit', limit), ('select', '*')])
         ingest_obs = self._fetch_json(rest + '/observations?' + q_obs, headers) or []
         obs_obs = []
@@ -1027,7 +1141,10 @@ class MultiRootHandler(http.server.SimpleHTTPRequestHandler):
         selected_meta = result.get('selected_timeseries') or {}
         r2_params = {'timeseries_id': selected, 'timeseries_ref': selected_meta.get('timeseries_ref'), 'station_id': station_id, 'station_ref': selected_meta.get('station_ref'), 'connector_id': selected_meta.get('connector_id'), 'service_ref': selected_meta.get('service_ref'), 'phenomenon_id': selected_meta.get('phenomenon_id'), 'pollutant': pollutant, 'from_utc': start, 'to_utc': end, 'row_limit': limit}
         result.setdefault('debug', {}).update({'r2_lookup_key_or_filter': r2_params, 'ingestdb_row_count': len(ingest_obs), 'obsaqidb_row_count': len(obs_obs)})
-        r2_obs = self._v2_fetch_r2_rows(UK_AQ_OBSERVS_HISTORY_R2_API_URL, UK_AQ_OBSERVS_HISTORY_R2_API_TOKEN, r2_params)
+        r2_obs, chart_debug = self._v2_fetch_chart_history_rows(r2_params)
+        result.setdefault('debug', {}).update(chart_debug)
+        if not r2_obs:
+            r2_obs = self._v2_fetch_r2_rows(UK_AQ_OBSERVS_HISTORY_R2_API_URL, UK_AQ_OBSERVS_HISTORY_R2_API_TOKEN, r2_params)
         r2_aqi = self._v2_fetch_r2_rows(UK_AQ_AQI_HISTORY_R2_API_URL, UK_AQ_AQI_HISTORY_R2_API_TOKEN, r2_params)
         for row in r2_aqi:
             row.setdefault('source', 'r2')
@@ -1037,7 +1154,7 @@ class MultiRootHandler(http.server.SimpleHTTPRequestHandler):
     def _v2_rows_via_sql(self, result, station_id, pollutant, window, requested_ts):
         import psycopg2, psycopg2.extras
         start, end = self._window_bounds_utc(window)
-        result.setdefault('debug', {}).update({'range_start': start, 'range_end': end})
+        result.setdefault('debug', {}).update({'range_start_utc': start, 'range_end_utc': end})
         with psycopg2.connect(INGESTDB_DB_URL) as conn, conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
             cur.execute('SELECT t.*, s.station_ref FROM uk_aq_core.timeseries t LEFT JOIN uk_aq_core.stations s ON s.id = t.station_id WHERE t.station_id = %s ORDER BY t.id', (int(station_id),)); all_ts = [dict(r) for r in cur.fetchall()]
             self._v2_select_timeseries(result, [r for r in all_ts if self._v2_ts_matches(r, pollutant)], requested_ts)
@@ -1053,7 +1170,10 @@ class MultiRootHandler(http.server.SimpleHTTPRequestHandler):
         selected_meta = result.get('selected_timeseries') or {}
         r2_params = {'timeseries_id': selected, 'timeseries_ref': selected_meta.get('timeseries_ref'), 'station_id': station_id, 'station_ref': selected_meta.get('station_ref'), 'connector_id': selected_meta.get('connector_id'), 'service_ref': selected_meta.get('service_ref'), 'phenomenon_id': selected_meta.get('phenomenon_id'), 'pollutant': pollutant, 'from_utc': start, 'to_utc': end, 'row_limit': STATION_SNAPSHOT_MAX_ROWS}
         result.setdefault('debug', {}).update({'r2_lookup_key_or_filter': r2_params, 'ingestdb_row_count': len(ingest_obs), 'obsaqidb_row_count': len(obs_obs)})
-        r2_obs = self._v2_fetch_r2_rows(UK_AQ_OBSERVS_HISTORY_R2_API_URL, UK_AQ_OBSERVS_HISTORY_R2_API_TOKEN, r2_params)
+        r2_obs, chart_debug = self._v2_fetch_chart_history_rows(r2_params)
+        result.setdefault('debug', {}).update(chart_debug)
+        if not r2_obs:
+            r2_obs = self._v2_fetch_r2_rows(UK_AQ_OBSERVS_HISTORY_R2_API_URL, UK_AQ_OBSERVS_HISTORY_R2_API_TOKEN, r2_params)
         r2_aqi = self._v2_fetch_r2_rows(UK_AQ_AQI_HISTORY_R2_API_URL, UK_AQ_AQI_HISTORY_R2_API_TOKEN, r2_params)
         for row in r2_aqi:
             row.setdefault('source', 'r2')
@@ -1107,9 +1227,28 @@ class MultiRootHandler(http.server.SimpleHTTPRequestHandler):
             row['eaqi_colour'] = eaqi_colour if eaqi_colour is not None else self._aqi_colour('eaqi', row['eaqi_index_level'])
         result['rows'] = sorted(merged.values(), key=lambda r: r['observed_at'], reverse=True)[:STATION_SNAPSHOT_MAX_ROWS]
         result.setdefault('debug', {})['merged_row_count'] = len(result['rows'])
+        self._v2_set_empty_rows_warning(result)
+
+    def _v2_set_empty_rows_warning(self, result):
         selected_meta = result.get('selected_timeseries') or {}
-        if not result['rows'] and selected_meta.get('last_value') is not None:
-            result['warning'] = 'Selected %s timeseries has latest metadata inside this range, but no R2/ObsAQIDB/AQI rows were matched. Check identifier mapping.' % (str(result.get('pollutant') or '').upper())
+        if result.get('rows'):
+            return
+        latest_at_raw = selected_meta.get('last_value_at')
+        label = self._v2_pollutant_label(result.get('pollutant'))
+        debug = result.setdefault('debug', {})
+        debug['selected_timeseries_latest_at_utc'] = latest_at_raw
+        if not latest_at_raw:
+            result['warning'] = f'Selected {label} timeseries has no latest timestamp metadata.'
+            return
+        latest_at = self._parse_utc_datetime(latest_at_raw)
+        start_at = self._parse_utc_datetime(debug.get('range_start_utc') or debug.get('range_start'))
+        end_at = self._parse_utc_datetime(debug.get('range_end_utc') or debug.get('range_end'))
+        in_range = bool(latest_at and start_at and end_at and start_at <= latest_at <= end_at)
+        debug['selected_timeseries_latest_in_range'] = in_range
+        if not in_range:
+            result['warning'] = f'Selected {label} timeseries latest metadata is outside this range. Try a longer range.'
+        else:
+            result['warning'] = f'Selected {label} timeseries has latest metadata inside this range, but no R2/ObsAQIDB/AQI rows were matched. Check identifier mapping.'
 
     def _json_response(self, body):
         self.send_response(200)
