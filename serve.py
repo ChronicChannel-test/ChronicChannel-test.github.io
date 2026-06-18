@@ -906,7 +906,11 @@ class MultiRootHandler(http.server.SimpleHTTPRequestHandler):
                 match = self._v2_pollutant_from_text(json.dumps(value, sort_keys=True))
                 if match:
                     return match
-        return self._v2_pollutant_from_text(row.get('label') or row.get('measurement_type') or row.get('uom') or row.get('unit'))
+        for key in ('label', 'measurement_type', 'uom', 'unit', 'unit_symbol'):
+            match = self._v2_pollutant_from_text(row.get(key))
+            if match:
+                return match
+        return None
 
     def _v2_pollutant_from_text(self, value):
         if value is None:
@@ -927,7 +931,7 @@ class MultiRootHandler(http.server.SimpleHTTPRequestHandler):
         params = {k: v[0] for k, v in parse_qs(parsed.query).items()}
         station_id = (params.get('station_id') or '').strip(); pollutant = self._normalize_v2_pollutant(params.get('pollutant'))
         window = self._normalize_v2_range(params.get('range')); requested_ts = (params.get('timeseries_id') or '').strip()
-        result = {'station_id': int(station_id) if station_id.isdigit() else station_id, 'pollutant': pollutant, 'range': window, 'timeseries': [], 'selected_timeseries_id': None, 'overlap_detected': False, 'rows': []}
+        result = {'station_id': int(station_id) if station_id.isdigit() else station_id, 'pollutant': pollutant, 'range': window, 'timeseries': [], 'selected_timeseries_id': None, 'overlap_detected': False, 'rows': [], 'debug': {}}
         if not station_id or not pollutant:
             result['error'] = 'station_id and pollutant (pm25, pm10, no2) are required'; self._json_response(json.dumps(result).encode('utf-8')); return
         try:
@@ -946,23 +950,46 @@ class MultiRootHandler(http.server.SimpleHTTPRequestHandler):
         self._json_response(json.dumps(result, default=str).encode('utf-8'))
 
     def _v2_select_timeseries(self, result, timeseries, requested_ts):
-        result['timeseries'] = [{'timeseries_id': r.get('id') or r.get('timeseries_id'), 'timeseries_ref': r.get('timeseries_ref'), 'connector_id': r.get('connector_id'), 'station_id': r.get('station_id'), 'phenomenon_id': r.get('phenomenon_id'), 'label': r.get('label') or r.get('pollutant_label') or r.get('notation'), 'uom': r.get('uom') or r.get('unit') or r.get('unit_symbol')} for r in timeseries]
+        result['timeseries'] = [{'timeseries_id': r.get('id') or r.get('timeseries_id'), 'timeseries_ref': r.get('timeseries_ref'), 'connector_id': r.get('connector_id'), 'station_id': r.get('station_id'), 'phenomenon_id': r.get('phenomenon_id'), 'label': r.get('label') or r.get('pollutant_label') or r.get('notation'), 'uom': r.get('uom') or r.get('unit') or r.get('unit_symbol'), 'station_ref': r.get('station_ref'), 'service_ref': r.get('service_ref'), 'last_value': r.get('last_value'), 'last_value_at': r.get('last_value_at')} for r in timeseries]
         ids = [str(r['timeseries_id']) for r in result['timeseries'] if r.get('timeseries_id') is not None]
         if requested_ts and requested_ts not in ids:
             result['message'] = 'Requested timeseries is not valid for the selected pollutant; using the best selected-pollutant timeseries.' if ids else 'No selected pollutant timeseries is available for this station.'
         result['selected_timeseries_id'] = int(requested_ts) if requested_ts and requested_ts in ids else (int(ids[0]) if ids else None)
         result['selected_timeseries'] = next((r for r in result['timeseries'] if str(r.get('timeseries_id')) == str(result.get('selected_timeseries_id'))), None)
+        debug = result.setdefault('debug', {})
+        selected_meta = result.get('selected_timeseries') or {}
+        debug.update({
+            'station_id': result.get('station_id'),
+            'pollutant': result.get('pollutant'),
+            'requested_timeseries_id': requested_ts or None,
+            'selected_timeseries_id': result.get('selected_timeseries_id'),
+            'selected_timeseries_ref': selected_meta.get('timeseries_ref'),
+            'selected_connector_id': selected_meta.get('connector_id'),
+            'selected_station_ref': selected_meta.get('station_ref'),
+            'selected_service_ref': selected_meta.get('service_ref'),
+            'selected_phenomenon_id': selected_meta.get('phenomenon_id'),
+        })
         if not ids:
             result['message'] = 'No selected pollutant timeseries is available for this station.'
 
     def _v2_rows_via_postgrest(self, result, station_id, pollutant, window, requested_ts):
         rest = INGESTDB_SUPABASE_URL.rstrip('/') + '/rest/v1'; headers = self._v2_headers(INGESTDB_SERVICE_KEY)
         qs = urlencode([('station_id', f'eq.{int(station_id)}'), ('select', '*'), ('order', 'id.asc')])
+        station_meta = {}
+        try:
+            station_qs = urlencode([('id', f'eq.{int(station_id)}'), ('select', 'id,station_ref,connector_id'), ('limit', '1')])
+            station_rows = self._fetch_json(rest + '/stations?' + station_qs, headers) or []
+            station_meta = station_rows[0] if station_rows else {}
+        except Exception:
+            station_meta = {}
         all_ts = self._fetch_json(rest + '/timeseries?' + qs, headers) or []
+        for row in all_ts:
+            row.setdefault('station_ref', station_meta.get('station_ref'))
         self._v2_select_timeseries(result, [r for r in all_ts if self._v2_ts_matches(r, pollutant)], requested_ts)
         selected = result.get('selected_timeseries_id')
         if not selected: return
         start, end = self._window_bounds_utc(window); limit = str(STATION_SNAPSHOT_MAX_ROWS)
+        result.setdefault('debug', {}).update({'range_start': start, 'range_end': end})
         q_obs = urlencode([('timeseries_id', f'eq.{selected}'), ('observed_at', f'gte.{start}'), ('observed_at', f'lte.{end}'), ('order', 'observed_at.desc'), ('limit', limit), ('select', '*')])
         ingest_obs = self._fetch_json(rest + '/observations?' + q_obs, headers) or []
         obs_obs = []
@@ -997,18 +1024,22 @@ class MultiRootHandler(http.server.SimpleHTTPRequestHandler):
             except Exception as exc:
                 print(f'  [snapshot-v2] ObsAQIDB AQI/hourly fetch failed: {exc}')
                 obs_aqi = []
-        r2_params = {'timeseries_id': selected, 'station_id': station_id, 'pollutant': pollutant, 'from_utc': start, 'to_utc': end, 'row_limit': limit}
+        selected_meta = result.get('selected_timeseries') or {}
+        r2_params = {'timeseries_id': selected, 'timeseries_ref': selected_meta.get('timeseries_ref'), 'station_id': station_id, 'station_ref': selected_meta.get('station_ref'), 'connector_id': selected_meta.get('connector_id'), 'service_ref': selected_meta.get('service_ref'), 'phenomenon_id': selected_meta.get('phenomenon_id'), 'pollutant': pollutant, 'from_utc': start, 'to_utc': end, 'row_limit': limit}
+        result.setdefault('debug', {}).update({'r2_lookup_key_or_filter': r2_params, 'ingestdb_row_count': len(ingest_obs), 'obsaqidb_row_count': len(obs_obs)})
         r2_obs = self._v2_fetch_r2_rows(UK_AQ_OBSERVS_HISTORY_R2_API_URL, UK_AQ_OBSERVS_HISTORY_R2_API_TOKEN, r2_params)
         r2_aqi = self._v2_fetch_r2_rows(UK_AQ_AQI_HISTORY_R2_API_URL, UK_AQ_AQI_HISTORY_R2_API_TOKEN, r2_params)
         for row in r2_aqi:
             row.setdefault('source', 'r2')
+        result.setdefault('debug', {}).update({'r2_row_count': len(r2_obs), 'aqi_row_count': len(r2_aqi) + len(obs_aqi)})
         self._v2_merge_rows(result, ingest_obs, obs_obs, r2_obs, r2_aqi + obs_aqi)
 
     def _v2_rows_via_sql(self, result, station_id, pollutant, window, requested_ts):
         import psycopg2, psycopg2.extras
         start, end = self._window_bounds_utc(window)
+        result.setdefault('debug', {}).update({'range_start': start, 'range_end': end})
         with psycopg2.connect(INGESTDB_DB_URL) as conn, conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
-            cur.execute('SELECT * FROM uk_aq_core.timeseries WHERE station_id = %s ORDER BY id', (int(station_id),)); all_ts = [dict(r) for r in cur.fetchall()]
+            cur.execute('SELECT t.*, s.station_ref FROM uk_aq_core.timeseries t LEFT JOIN uk_aq_core.stations s ON s.id = t.station_id WHERE t.station_id = %s ORDER BY t.id', (int(station_id),)); all_ts = [dict(r) for r in cur.fetchall()]
             self._v2_select_timeseries(result, [r for r in all_ts if self._v2_ts_matches(r, pollutant)], requested_ts)
             selected = result.get('selected_timeseries_id')
             if not selected: return
@@ -1019,13 +1050,16 @@ class MultiRootHandler(http.server.SimpleHTTPRequestHandler):
                 for sql, target in [("SELECT * FROM uk_aq_observs.observations WHERE timeseries_id = %s AND observed_at >= %s AND observed_at <= %s ORDER BY observed_at DESC LIMIT %s", obs_obs), ("SELECT * FROM uk_aq_aqilevels.timeseries_aqi_hourly WHERE timeseries_id = %s AND timestamp_hour_utc >= %s AND timestamp_hour_utc <= %s ORDER BY timestamp_hour_utc DESC LIMIT %s", local_aqi)]:
                     try: cur.execute(sql, (selected, start, end, STATION_SNAPSHOT_MAX_ROWS)); target.extend(dict(r) for r in cur.fetchall())
                     except Exception: pass
-        r2_params = {'timeseries_id': selected, 'station_id': station_id, 'pollutant': pollutant, 'from_utc': start, 'to_utc': end, 'row_limit': STATION_SNAPSHOT_MAX_ROWS}
+        selected_meta = result.get('selected_timeseries') or {}
+        r2_params = {'timeseries_id': selected, 'timeseries_ref': selected_meta.get('timeseries_ref'), 'station_id': station_id, 'station_ref': selected_meta.get('station_ref'), 'connector_id': selected_meta.get('connector_id'), 'service_ref': selected_meta.get('service_ref'), 'phenomenon_id': selected_meta.get('phenomenon_id'), 'pollutant': pollutant, 'from_utc': start, 'to_utc': end, 'row_limit': STATION_SNAPSHOT_MAX_ROWS}
+        result.setdefault('debug', {}).update({'r2_lookup_key_or_filter': r2_params, 'ingestdb_row_count': len(ingest_obs), 'obsaqidb_row_count': len(obs_obs)})
         r2_obs = self._v2_fetch_r2_rows(UK_AQ_OBSERVS_HISTORY_R2_API_URL, UK_AQ_OBSERVS_HISTORY_R2_API_TOKEN, r2_params)
         r2_aqi = self._v2_fetch_r2_rows(UK_AQ_AQI_HISTORY_R2_API_URL, UK_AQ_AQI_HISTORY_R2_API_TOKEN, r2_params)
         for row in r2_aqi:
             row.setdefault('source', 'r2')
         for row in local_aqi:
             row.setdefault('source', 'obsaqidb')
+        result.setdefault('debug', {}).update({'r2_row_count': len(r2_obs), 'aqi_row_count': len(r2_aqi) + len(local_aqi)})
         self._v2_merge_rows(result, ingest_obs, obs_obs, r2_obs, r2_aqi + local_aqi)
 
     def _v2_merge_rows(self, result, ingest_obs, obs_obs, r2_obs, aqi_rows):
@@ -1047,7 +1081,7 @@ class MultiRootHandler(http.server.SimpleHTTPRequestHandler):
                 if not key:
                     continue
                 row = merged.setdefault(key, empty(key))
-                row[source] = r.get('value')
+                row[source] = pick(r, 'value', 'observed_value', 'observs_value', 'mean_value')
                 row[flag] = True
         for r in aqi_rows:
             key = self._hour_key(r.get('timestamp_hour_utc') or r.get('observed_at'))
@@ -1072,6 +1106,10 @@ class MultiRootHandler(http.server.SimpleHTTPRequestHandler):
             row['daqi_colour'] = daqi_colour if daqi_colour is not None else self._aqi_colour('daqi', row['daqi_index_level'])
             row['eaqi_colour'] = eaqi_colour if eaqi_colour is not None else self._aqi_colour('eaqi', row['eaqi_index_level'])
         result['rows'] = sorted(merged.values(), key=lambda r: r['observed_at'], reverse=True)[:STATION_SNAPSHOT_MAX_ROWS]
+        result.setdefault('debug', {})['merged_row_count'] = len(result['rows'])
+        selected_meta = result.get('selected_timeseries') or {}
+        if not result['rows'] and selected_meta.get('last_value') is not None:
+            result['warning'] = 'Selected %s timeseries has latest metadata inside this range, but no R2/ObsAQIDB/AQI rows were matched. Check identifier mapping.' % (str(result.get('pollutant') or '').upper())
 
     def _json_response(self, body):
         self.send_response(200)
