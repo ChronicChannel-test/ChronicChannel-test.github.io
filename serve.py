@@ -726,12 +726,16 @@ class MultiRootHandler(http.server.SimpleHTTPRequestHandler):
     def _aqi_colour(self, scheme, level):
         if level is None:
             return None
+        daqi = {1: '#1DB100', 2: '#61D836', 3: '#34FF00', 4: '#FFFB00', 5: '#FFCE04', 6: '#FF9300', 7: '#FF6464', 8: '#FF2600', 9: '#A50026', 10: '#672C7F'}
+        eaqi = {'good': '#34FF00', 'fair': '#FFFB00', 'moderate': '#FF9300', 'poor': '#FF2600', 'very poor': '#A50026', 'extremely poor': '#672C7F', 1: '#34FF00', 2: '#FFFB00', 3: '#FF9300', 4: '#FF2600', 5: '#A50026', 6: '#672C7F'}
+        if scheme == 'eaqi' and isinstance(level, str):
+            labelled = eaqi.get(level.strip().lower())
+            if labelled:
+                return labelled
         try:
             n = int(level)
         except (TypeError, ValueError):
             return None
-        daqi = {1: '#9CFF9C', 2: '#31FF00', 3: '#31CF00', 4: '#FFFF00', 5: '#FFCF00', 6: '#FF9A00', 7: '#FF6464', 8: '#FF0000', 9: '#990000', 10: '#CE30FF'}
-        eaqi = {1: '#50F0E6', 2: '#50CCAA', 3: '#F0E641', 4: '#FF5050', 5: '#960032', 6: '#7D2181'}
         return (eaqi if scheme == 'eaqi' else daqi).get(n)
 
 
@@ -810,10 +814,17 @@ class MultiRootHandler(http.server.SimpleHTTPRequestHandler):
         for row in station_rows:
             station = self._v2_station_row(row)
             station_key = str(station.get('station_id')) if station.get('station_id') is not None else ''
-            ts = latest_by_station.get(station_key) or {}
+            ts = latest_by_station.get(station_key)
+            if not ts:
+                continue
             station['last_value'] = ts.get('last_value')
             station['last_value_at'] = ts.get('last_value_at')
-            station['last_value_timeseries_id'] = ts.get('id') or ts.get('timeseries_id')
+            station['selected_timeseries_id'] = ts.get('id') or ts.get('timeseries_id')
+            station['selected_timeseries_ref'] = ts.get('timeseries_ref')
+            station['selected_timeseries_connector_id'] = ts.get('connector_id')
+            station['selected_timeseries_phenomenon_id'] = ts.get('phenomenon_id')
+            station['selected_timeseries_label'] = ts.get('label')
+            station['last_value_timeseries_id'] = station['selected_timeseries_id']
             stations.append(station)
         return stations
 
@@ -866,31 +877,51 @@ class MultiRootHandler(http.server.SimpleHTTPRequestHandler):
         self._json_response(json.dumps(result, default=str).encode('utf-8'))
 
     def _v2_ts_matches(self, row, pollutant):
-        fields = (
+        return self._v2_ts_pollutant_key(row) == pollutant
+
+    def _v2_ts_pollutant_key(self, row):
+        # Prefer structured pollutant metadata over label text. The AURN PM2.5
+        # rows seen at Bristol Temple Way use phenomenon_id 2 and the Eionet
+        # URI /pollutant/6001 with labels such as "Particulate matter less than
+        # 2.5 micro m", so those exact rules are kept explicit here.
+        structured_fields = (
             'pollutant', 'pollutant_code', 'pollutant_notation', 'notation',
-            'phenomena_notation', 'phenomenon_notation', 'label', 'pollutant_label',
-            'phenomena_label', 'parameter', 'parameter_code', 'measurement_type',
-            'unit', 'uom',
+            'phenomena_notation', 'phenomenon_notation', 'parameter',
+            'parameter_code', 'pollutant_label', 'phenomena_label',
         )
-        text_parts = []
-        for key in fields:
-            value = row.get(key)
-            if value is not None:
-                text_parts.append(str(value))
-        for key in ('extras', 'rendering_hints'):
+        for key in structured_fields:
+            match = self._v2_pollutant_from_text(row.get(key))
+            if match:
+                return match
+        try:
+            phenomenon_id = int(row.get('phenomenon_id'))
+        except (TypeError, ValueError):
+            phenomenon_id = None
+        phenomenon_map = {2: 'pm25'}
+        if phenomenon_id in phenomenon_map:
+            return phenomenon_map[phenomenon_id]
+        for key in ('extras', 'rendering_hints', 'phenomenon'):
             value = row.get(key)
             if isinstance(value, dict):
-                text_parts.append(json.dumps(value, sort_keys=True))
-            elif value is not None:
-                text_parts.append(str(value))
-        hay_text = ' '.join(text_parts).lower().replace('₂', '2').replace('₅', '5').replace('₁', '1').replace('₀', '0')
-        hay = ''.join(ch for ch in hay_text if ch.isalnum())
-        aliases = {
-            'pm25': ('pm25', 'pm2p5', 'particulatematter25', 'fineparticulatematter'),
-            'pm10': ('pm10', 'particulatematter10'),
-            'no2': ('no2', 'nitrogendioxide'),
-        }
-        return any(alias in hay for alias in aliases.get(pollutant, (pollutant,)))
+                match = self._v2_pollutant_from_text(json.dumps(value, sort_keys=True))
+                if match:
+                    return match
+        return self._v2_pollutant_from_text(row.get('label') or row.get('measurement_type') or row.get('uom') or row.get('unit'))
+
+    def _v2_pollutant_from_text(self, value):
+        if value is None:
+            return None
+        text = str(value).lower().replace('₂', '2').replace('₅', '5').replace('₁', '1').replace('₀', '0')
+        compact = ''.join(ch for ch in text if ch.isalnum())
+        if 'ddeioneteuropaeuvocabularyaqpollutant6001' in compact or 'pollutant6001' in compact:
+            return 'pm25'
+        if 'particulatematterlessthan25' in compact or any(alias in compact for alias in ('pm25', 'pm2p5')):
+            return 'pm25'
+        if 'particulatematterlessthan10' in compact or any(alias in compact for alias in ('pm10', 'particulatematter10')):
+            return 'pm10'
+        if any(alias in compact for alias in ('no2', 'nitrogendioxide')):
+            return 'no2'
+        return None
 
     def _serve_station_snapshot_v2_rows(self, parsed):
         params = {k: v[0] for k, v in parse_qs(parsed.query).items()}
@@ -915,16 +946,20 @@ class MultiRootHandler(http.server.SimpleHTTPRequestHandler):
         self._json_response(json.dumps(result, default=str).encode('utf-8'))
 
     def _v2_select_timeseries(self, result, timeseries, requested_ts):
-        result['timeseries'] = [{'timeseries_id': r.get('id') or r.get('timeseries_id'), 'connector_id': r.get('connector_id'), 'station_id': r.get('station_id'), 'label': r.get('label') or r.get('pollutant_label') or r.get('notation'), 'uom': r.get('uom') or r.get('unit') or r.get('unit_symbol')} for r in timeseries]
+        result['timeseries'] = [{'timeseries_id': r.get('id') or r.get('timeseries_id'), 'timeseries_ref': r.get('timeseries_ref'), 'connector_id': r.get('connector_id'), 'station_id': r.get('station_id'), 'phenomenon_id': r.get('phenomenon_id'), 'label': r.get('label') or r.get('pollutant_label') or r.get('notation'), 'uom': r.get('uom') or r.get('unit') or r.get('unit_symbol')} for r in timeseries]
         ids = [str(r['timeseries_id']) for r in result['timeseries'] if r.get('timeseries_id') is not None]
+        if requested_ts and requested_ts not in ids:
+            result['message'] = 'Requested timeseries is not valid for the selected pollutant; using the best selected-pollutant timeseries.' if ids else 'No selected pollutant timeseries is available for this station.'
         result['selected_timeseries_id'] = int(requested_ts) if requested_ts and requested_ts in ids else (int(ids[0]) if ids else None)
         result['selected_timeseries'] = next((r for r in result['timeseries'] if str(r.get('timeseries_id')) == str(result.get('selected_timeseries_id'))), None)
+        if not ids:
+            result['message'] = 'No selected pollutant timeseries is available for this station.'
 
     def _v2_rows_via_postgrest(self, result, station_id, pollutant, window, requested_ts):
         rest = INGESTDB_SUPABASE_URL.rstrip('/') + '/rest/v1'; headers = self._v2_headers(INGESTDB_SERVICE_KEY)
         qs = urlencode([('station_id', f'eq.{int(station_id)}'), ('select', '*'), ('order', 'id.asc')])
         all_ts = self._fetch_json(rest + '/timeseries?' + qs, headers) or []
-        self._v2_select_timeseries(result, [r for r in all_ts if self._v2_ts_matches(r, pollutant)] or all_ts, requested_ts)
+        self._v2_select_timeseries(result, [r for r in all_ts if self._v2_ts_matches(r, pollutant)], requested_ts)
         selected = result.get('selected_timeseries_id')
         if not selected: return
         start, end = self._window_bounds_utc(window); limit = str(STATION_SNAPSHOT_MAX_ROWS)
@@ -974,7 +1009,7 @@ class MultiRootHandler(http.server.SimpleHTTPRequestHandler):
         start, end = self._window_bounds_utc(window)
         with psycopg2.connect(INGESTDB_DB_URL) as conn, conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
             cur.execute('SELECT * FROM uk_aq_core.timeseries WHERE station_id = %s ORDER BY id', (int(station_id),)); all_ts = [dict(r) for r in cur.fetchall()]
-            self._v2_select_timeseries(result, [r for r in all_ts if self._v2_ts_matches(r, pollutant)] or all_ts, requested_ts)
+            self._v2_select_timeseries(result, [r for r in all_ts if self._v2_ts_matches(r, pollutant)], requested_ts)
             selected = result.get('selected_timeseries_id')
             if not selected: return
             cur.execute('SELECT * FROM uk_aq_core.observations WHERE timeseries_id = %s AND observed_at >= %s AND observed_at <= %s ORDER BY observed_at DESC LIMIT %s', (selected, start, end, STATION_SNAPSHOT_MAX_ROWS)); ingest_obs = [dict(r) for r in cur.fetchall()]
