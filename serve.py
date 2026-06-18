@@ -59,6 +59,8 @@ _env.update(_load_env_file(os.path.join(ROOTS['/uk-aq'], '.env')))
 _env.update(_load_env_file(os.path.join(os.path.dirname(__file__), '.env')))
 if OPS_REPO_ROOT:
     _env.update(_load_env_file(os.path.join(OPS_REPO_ROOT, '.env')))
+# Real environment variables override local .env files so deployed/CI config wins.
+_env.update(os.environ)
 CF_CLIENT_ID     = _env.get('CLOUDFLARE_ACCESS_CLIENT_ID', '')
 CF_CLIENT_SECRET = _env.get('CLOUDFLARE_ACCESS_CLIENT_SECRET', '')
 AQ_CACHE_BYPASS_SECRET = _env.get('UK_AQ_CACHE_BYPASS_SECRET', '')
@@ -759,6 +761,25 @@ class MultiRootHandler(http.server.SimpleHTTPRequestHandler):
             parsed = parsed.replace(tzinfo=datetime.timezone.utc)
         return parsed.astimezone(datetime.timezone.utc)
 
+    def _v2_config_status(self):
+        return {
+            'cloudflare_access_client_id_present': bool(CF_CLIENT_ID),
+            'cloudflare_access_client_secret_present': bool(CF_CLIENT_SECRET),
+            'edge_upstream_secret_present': bool(EDGE_UPSTREAM_SECRET),
+            'cache_bypass_secret_present': bool(AQ_CACHE_BYPASS_SECRET),
+            'observs_history_r2_api_url_present': bool(UK_AQ_OBSERVS_HISTORY_R2_API_URL),
+            'observs_history_r2_api_token_present': bool(UK_AQ_OBSERVS_HISTORY_R2_API_TOKEN),
+            'aqi_history_r2_api_url_present': bool(UK_AQ_AQI_HISTORY_R2_API_URL),
+            'aqi_history_r2_api_token_present': bool(UK_AQ_AQI_HISTORY_R2_API_TOKEN),
+        }
+
+    def _v2_auth_attempted(self):
+        return {
+            'cloudflare_access_service_token': bool(CF_CLIENT_ID and CF_CLIENT_SECRET),
+            'edge_upstream_secret': bool(EDGE_UPSTREAM_SECRET),
+            'cache_bypass_secret': bool(AQ_CACHE_BYPASS_SECRET),
+        }
+
     def _v2_chart_history_headers(self):
         headers = {'Accept': 'application/json'}
         if CF_CLIENT_ID and CF_CLIENT_SECRET:
@@ -831,11 +852,14 @@ class MultiRootHandler(http.server.SimpleHTTPRequestHandler):
             'r2_first_matching_key_reason': None,
             'r2_object_rows_read': 0,
             'r2_rows_after_time_filter': 0,
+            'chart_history_auth_attempted': self._v2_auth_attempted(),
         }
         try:
             payload = self._fetch_json(url, self._v2_chart_history_headers())
         except Exception as exc:
             debug['chart_history_error'] = str(exc)
+            if '403' in str(exc) or 'Forbidden' in str(exc):
+                debug['chart_history_auth_hint'] = 'Protected chart history route returned 403. Check Cloudflare Access service token and upstream secret env vars.'
             print(f'  [snapshot-v2] chart-history R2 fetch failed: {exc}')
             return [], debug
         if isinstance(payload, dict):
@@ -854,7 +878,7 @@ class MultiRootHandler(http.server.SimpleHTTPRequestHandler):
         return rows, debug
 
     def _v2_fetch_r2_rows(self, base_url, token, params):
-        if not base_url:
+        if not base_url or not token:
             return []
 
         headers = {
@@ -1045,7 +1069,7 @@ class MultiRootHandler(http.server.SimpleHTTPRequestHandler):
         params = {k: v[0] for k, v in parse_qs(parsed.query).items()}
         station_id = (params.get('station_id') or '').strip(); pollutant = self._normalize_v2_pollutant(params.get('pollutant'))
         window = self._normalize_v2_range(params.get('range')); requested_ts = (params.get('timeseries_id') or '').strip()
-        result = {'station_id': int(station_id) if station_id.isdigit() else station_id, 'pollutant': pollutant, 'range': window, 'timeseries': [], 'selected_timeseries_id': None, 'overlap_detected': False, 'rows': [], 'debug': {}}
+        result = {'station_id': int(station_id) if station_id.isdigit() else station_id, 'pollutant': pollutant, 'range': window, 'timeseries': [], 'selected_timeseries_id': None, 'overlap_detected': False, 'rows': [], 'debug': {'config': self._v2_config_status()}}
         if not station_id or not pollutant:
             result['error'] = 'station_id and pollutant (pm25, pm10, no2) are required'; self._json_response(json.dumps(result).encode('utf-8')); return
         try:
@@ -1140,7 +1164,12 @@ class MultiRootHandler(http.server.SimpleHTTPRequestHandler):
                 obs_aqi = []
         selected_meta = result.get('selected_timeseries') or {}
         r2_params = {'timeseries_id': selected, 'timeseries_ref': selected_meta.get('timeseries_ref'), 'station_id': station_id, 'station_ref': selected_meta.get('station_ref'), 'connector_id': selected_meta.get('connector_id'), 'service_ref': selected_meta.get('service_ref'), 'phenomenon_id': selected_meta.get('phenomenon_id'), 'pollutant': pollutant, 'from_utc': start, 'to_utc': end, 'row_limit': limit}
-        result.setdefault('debug', {}).update({'r2_lookup_key_or_filter': r2_params, 'ingestdb_row_count': len(ingest_obs), 'obsaqidb_row_count': len(obs_obs)})
+        debug = result.setdefault('debug', {})
+        debug.update({'r2_lookup_key_or_filter': r2_params, 'ingestdb_row_count': len(ingest_obs), 'obsaqidb_row_count': len(obs_obs)})
+        if not UK_AQ_OBSERVS_HISTORY_R2_API_URL or not UK_AQ_OBSERVS_HISTORY_R2_API_TOKEN:
+            debug['r2_observs_config_error'] = 'Observations R2 API URL/token not configured'
+        if not UK_AQ_AQI_HISTORY_R2_API_URL or not UK_AQ_AQI_HISTORY_R2_API_TOKEN:
+            debug['r2_aqi_config_error'] = 'AQI R2 API URL/token not configured'
         r2_obs, chart_debug = self._v2_fetch_chart_history_rows(r2_params)
         result.setdefault('debug', {}).update(chart_debug)
         if not r2_obs:
@@ -1169,7 +1198,12 @@ class MultiRootHandler(http.server.SimpleHTTPRequestHandler):
                     except Exception: pass
         selected_meta = result.get('selected_timeseries') or {}
         r2_params = {'timeseries_id': selected, 'timeseries_ref': selected_meta.get('timeseries_ref'), 'station_id': station_id, 'station_ref': selected_meta.get('station_ref'), 'connector_id': selected_meta.get('connector_id'), 'service_ref': selected_meta.get('service_ref'), 'phenomenon_id': selected_meta.get('phenomenon_id'), 'pollutant': pollutant, 'from_utc': start, 'to_utc': end, 'row_limit': STATION_SNAPSHOT_MAX_ROWS}
-        result.setdefault('debug', {}).update({'r2_lookup_key_or_filter': r2_params, 'ingestdb_row_count': len(ingest_obs), 'obsaqidb_row_count': len(obs_obs)})
+        debug = result.setdefault('debug', {})
+        debug.update({'r2_lookup_key_or_filter': r2_params, 'ingestdb_row_count': len(ingest_obs), 'obsaqidb_row_count': len(obs_obs)})
+        if not UK_AQ_OBSERVS_HISTORY_R2_API_URL or not UK_AQ_OBSERVS_HISTORY_R2_API_TOKEN:
+            debug['r2_observs_config_error'] = 'Observations R2 API URL/token not configured'
+        if not UK_AQ_AQI_HISTORY_R2_API_URL or not UK_AQ_AQI_HISTORY_R2_API_TOKEN:
+            debug['r2_aqi_config_error'] = 'AQI R2 API URL/token not configured'
         r2_obs, chart_debug = self._v2_fetch_chart_history_rows(r2_params)
         result.setdefault('debug', {}).update(chart_debug)
         if not r2_obs:
@@ -1245,7 +1279,16 @@ class MultiRootHandler(http.server.SimpleHTTPRequestHandler):
         end_at = self._parse_utc_datetime(debug.get('range_end_utc') or debug.get('range_end'))
         in_range = bool(latest_at and start_at and end_at and start_at <= latest_at <= end_at)
         debug['selected_timeseries_latest_in_range'] = in_range
-        if not in_range:
+        config_warnings = []
+        if debug.get('chart_history_auth_hint'):
+            config_warnings.append(debug['chart_history_auth_hint'])
+        if debug.get('r2_observs_config_error'):
+            config_warnings.append(debug['r2_observs_config_error'])
+        if debug.get('r2_aqi_config_error'):
+            config_warnings.append(debug['r2_aqi_config_error'])
+        if config_warnings:
+            result['warning'] = ' '.join(config_warnings)
+        elif not in_range:
             result['warning'] = f'Selected {label} timeseries latest metadata is outside this range. Try a longer range.'
         else:
             result['warning'] = f'Selected {label} timeseries has latest metadata inside this range, but no R2/ObsAQIDB/AQI rows were matched. Check identifier mapping.'
@@ -1365,18 +1408,15 @@ if __name__ == '__main__':
         print(f'  /station-snapshot-v2/ → Station Snapshot v2')
         print(f'  /api/aq/...      → proxy → {API_PROXY_TARGET}')
         print(f'  /api/postcode_*  → proxy → {POSTCODE_UPSTREAM_URL}')
-        if CF_CLIENT_ID:
-            print(f'  CF service token  → loaded ({CF_CLIENT_ID[:12]}...)')
-        else:
-            print(f'  CF service token  → NOT FOUND (check .env)')
-        if EDGE_UPSTREAM_SECRET:
-            print(f'  Edge upstream key → loaded ({EDGE_UPSTREAM_SECRET[:10]}...)')
-        else:
-            print(f'  Edge upstream key → NOT FOUND (add UK_AQ_EDGE_UPSTREAM_SECRET)')
-        if TURNSTILE_SITE_KEY:
-            print(f'  Turnstile key      → loaded ({TURNSTILE_SITE_KEY[:10]}...)')
-        else:
-            print(f'  Turnstile key      → NOT FOUND (add UK_AQ_TURNSTILE_SITE_KEY)')
+        print('  Station Snapshot v2 config:')
+        print(f"    Cloudflare Access service token → {'loaded' if CF_CLIENT_ID and CF_CLIENT_SECRET else 'missing'}")
+        print(f"    Edge upstream secret → {'loaded' if EDGE_UPSTREAM_SECRET else 'missing'}")
+        print(f"    Cache bypass secret → {'loaded' if AQ_CACHE_BYPASS_SECRET else 'missing'}")
+        print(f"    Observations R2 history API URL → {'loaded' if UK_AQ_OBSERVS_HISTORY_R2_API_URL else 'missing'}")
+        print(f"    Observations R2 history API token → {'loaded' if UK_AQ_OBSERVS_HISTORY_R2_API_TOKEN else 'missing'}")
+        print(f"    AQI R2 history API URL → {'loaded' if UK_AQ_AQI_HISTORY_R2_API_URL else 'missing'}")
+        print(f"    AQI R2 history API token → {'loaded' if UK_AQ_AQI_HISTORY_R2_API_TOKEN else 'missing'}")
+        print(f"  Turnstile key      → {'loaded' if TURNSTILE_SITE_KEY else 'NOT FOUND (add UK_AQ_TURNSTILE_SITE_KEY)'}")
         print(f'  Station snapshot   → mode={STATION_SNAPSHOT_MODE}')
         if INGESTDB_SUPABASE_URL and INGESTDB_SERVICE_KEY:
             print(f'  Snapshot ingest API → configured')

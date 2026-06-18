@@ -85,6 +85,21 @@ function compactDebug(debug){
   Object.keys(debug).forEach(k=>{if(ordered[k]===undefined)ordered[k]=debug[k];});
   return ordered;
 }
+function rowsDebugWarnings(debug){
+  const warnings=[];
+  if(!debug)return warnings;
+  if(debug.chart_history_auth_hint)warnings.push(debug.chart_history_auth_hint);
+  if(debug.r2_observs_config_error)warnings.push(debug.r2_observs_config_error);
+  if(debug.r2_aqi_config_error)warnings.push(debug.r2_aqi_config_error);
+  const cfg=debug.config||{};
+  if(debug.chart_history_error&&String(debug.chart_history_error).includes('403')&&!debug.chart_history_auth_hint){
+    warnings.push('Protected chart history route returned 403. Check Cloudflare Access service token and upstream secret config.');
+  }
+  if((cfg.cloudflare_access_client_id_present===false||cfg.cloudflare_access_client_secret_present===false)&&debug.chart_history_error){
+    warnings.push('Cloudflare Access service token config is missing or incomplete for server-side history diagnostics.');
+  }
+  return [...new Set(warnings)];
+}
 function renderDebug(debug){
   const compact=compactDebug(debug);
   if(!compact){debugPanel.hidden=true;debugPre.textContent='';return;}
@@ -160,6 +175,7 @@ async function loadRows(){
     renderDebug(j.debug);
     const warnings=[];
     if(j.warning)warnings.push(j.warning);
+    warnings.push(...rowsDebugWarnings(j.debug));
     if(j.overlap_detected)warnings.push('Overlap detected: both R2 and ObsAQIDB have AQI rows for the same observed_at. R2 is being used for AQI source values.');
     if(warnings.length){warning.hidden=false;warning.textContent=warnings.join(' ');}
     const list=j.timeseries||[];
