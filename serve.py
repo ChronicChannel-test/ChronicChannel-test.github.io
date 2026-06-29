@@ -742,12 +742,6 @@ class MultiRootHandler(http.server.SimpleHTTPRequestHandler):
     def _v2_headers(self, service_key):
         return {'apikey': service_key, 'Authorization': f'Bearer {service_key}', 'Accept': 'application/json', 'Accept-Profile': 'uk_aq_public', 'Content-Profile': 'uk_aq_public', 'Content-Type': 'application/json'}
 
-    def _connector_label(self, connector_id):
-        try:
-            return 'GOV.UK AURN' if int(connector_id) == 1 else f'Connector {connector_id}'
-        except (TypeError, ValueError):
-            return ''
-
     def _hour_key(self, value):
         if not value:
             return None
@@ -996,7 +990,19 @@ class MultiRootHandler(http.server.SimpleHTTPRequestHandler):
         self.send_error(404)
 
     def _v2_station_row(self, row):
-        return {'station_id': row.get('id') or row.get('station_id'), 'station_ref': row.get('station_ref'), 'station_name': row.get('station_name') or row.get('label'), 'connector_id': row.get('connector_id'), 'connector_label': self._connector_label(row.get('connector_id'))}
+        return {
+            'station_id': row.get('id') or row.get('station_id'),
+            'station_ref': row.get('station_ref'),
+            'station_name': row.get('station_name') or row.get('label'),
+
+            'network_id': row.get('network_id'),
+            'network_code': row.get('network_code'),
+            'network_label': row.get('network_label'),
+
+            'connector_id': row.get('connector_id'),
+            'connector_code': row.get('connector_code'),
+            'connector_label': row.get('connector_label'),
+        }
 
     def _v2_station_search_rows_with_last_values(self, station_rows, timeseries_rows, pollutant):
         latest_by_station = {}
@@ -1044,7 +1050,7 @@ class MultiRootHandler(http.server.SimpleHTTPRequestHandler):
                 rest = INGESTDB_SUPABASE_URL.rstrip('/') + '/rest/v1'
                 ors = ','.join([f'station_name.ilike.*{query}*', f'label.ilike.*{query}*', f'station_ref.ilike.*{query}*'])
                 if query.isdigit(): ors += f',id.eq.{query}'
-                qs = urlencode([('or', f'({ors})'), ('select', 'id,station_ref,station_name,label,connector_id'), ('limit', '25'), ('order', 'station_name.asc')])
+                qs = urlencode([('or', f'({ors})'), ('select','id,station_ref,station_name,label,network_id,network_code,network_label,connector_id,connector_code,connector_label'), ('limit', '25'), ('order', 'station_name.asc')])
                 rows = self._fetch_json(rest + '/stations?' + qs, self._v2_headers(INGESTDB_SERVICE_KEY)) or []
                 station_ids = [r.get('id') or r.get('station_id') for r in rows if r.get('id') or r.get('station_id')]
                 timeseries = []
@@ -1063,7 +1069,7 @@ class MultiRootHandler(http.server.SimpleHTTPRequestHandler):
             import psycopg2, psycopg2.extras
             with psycopg2.connect(INGESTDB_DB_URL) as conn, conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
                 like = f'%{query}%'
-                cur.execute("SELECT id, station_ref, station_name, label, connector_id FROM uk_aq_core.stations WHERE station_name ILIKE %s OR COALESCE(label, '') ILIKE %s OR station_ref ILIKE %s OR (%s ~ '^[0-9]+$' AND id = %s::int) ORDER BY station_name LIMIT 25", (like, like, like, query, query if query.isdigit() else '0'))
+                cur.execute("SELECT station_id AS id, station_ref, station_name, station_name AS label, network_id, network_code, network_label, connector_id, connector_code, connector_label FROM uk_aq_public.stations WHERE station_name ILIKE %s OR COALESCE(station_name, '') ILIKE %s OR station_ref ILIKE %s OR (%s ~ '^[0-9]+$' AND station_id = %s::int)ORDER BY station_name LIMIT 25", (like, like, like, query, query if query.isdigit() else '0'))
                 station_rows = [dict(r) for r in cur.fetchall()]
                 station_ids = [r.get('id') or r.get('station_id') for r in station_rows if r.get('id') or r.get('station_id')]
                 timeseries = []
