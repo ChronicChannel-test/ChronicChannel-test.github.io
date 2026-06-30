@@ -130,7 +130,11 @@ class MultiRootHandler(http.server.SimpleHTTPRequestHandler):
             return False
 
         if TURNSTILE_PLACEHOLDER not in html:
+            print(f"  Turnstile injection skipped: placeholder not found in {decoded_path}")
             return False
+
+        rendered = html.replace(TURNSTILE_PLACEHOLDER, TURNSTILE_SITE_KEY).encode('utf-8')
+        print(f"  Turnstile injection applied: {decoded_path}")
 
         rendered = html.replace(TURNSTILE_PLACEHOLDER, TURNSTILE_SITE_KEY).encode('utf-8')
         self.send_response(200)
